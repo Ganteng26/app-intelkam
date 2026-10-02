@@ -479,3 +479,5 @@ with tab3:
             file_name=f"Rekap_Intelkam_Ciamis_{datetime.today().strftime('%Y%m%d')}.csv",
             mime="text/csv",
         )
+
+sempurnakan kode diatas dikolaborasikan dengan kode sebelumnya tanpa menghilangkan fungsi utama kode diatas untuk convert data menjadi format intelijen
