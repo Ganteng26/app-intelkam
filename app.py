@@ -1,4 +1,7 @@
+import base64
 import io
+import json
+import os
 import time
 from datetime import datetime
 
@@ -6,8 +9,6 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from docx import Document
-from google import genai
-from google.genai import types
 
 # ---------------------------------------------------------------------------
 # Konfigurasi
@@ -37,7 +38,6 @@ KATEGORI = [
 ]
 KATEGORI_DEFAULT = "SOSIAL BUDAYA"
 
-# Petunjuk isi tiap kategori agar deteksi otomatis lebih akurat
 KATEGORI_KETERANGAN = {
     "POLITIK": "kegiatan partai politik, pemilu/pilkada, demonstrasi atau aksi massa bermuatan politik, dinamika sospol",
     "EKONOMI": "kegiatan perdagangan, perusahaan, harga kebutuhan pokok, ketenagakerjaan, investasi, usaha",
@@ -46,8 +46,22 @@ KATEGORI_KETERANGAN = {
     "PENGAWASAN ORANG ASING (POA)": "orang asing/WNA: paspor, ITAS/ITAP, sponsor, penjamin, SKK",
 }
 
-# Urutan prioritas model (ganti sesuai daftar model aktif di akun Anda)
-MODELS_TO_TRY = ["gemini-3.8-flash", "gemini-2.5-flash"]
+# Daftar AI yang didukung. Ubah daftar "models" sesuai model aktif di akun Anda.
+# Model pertama dicoba lebih dulu, lalu berikutnya jika gagal.
+PROVIDERS = {
+    "Gemini (Google)": {
+        "secret": "GEMINI_API_KEY",
+        "models": ["gemini-3.8-flash", "gemini-2.5-flash"],
+    },
+    "Claude (Anthropic)": {
+        "secret": "ANTHROPIC_API_KEY",
+        "models": ["claude-sonnet-5-5"],
+    },
+    "ChatGPT (OpenAI)": {
+        "secret": "OPENAI_API_KEY",
+        "models": ["gpt-4.1"],
+    },
+}
 
 st.title("🛡️ Sistem Informasi & Rekapitulasi Intelkam Polres Ciamis")
 st.caption(
@@ -55,94 +69,206 @@ st.caption(
 )
 
 # ---------------------------------------------------------------------------
-# Sidebar
+# Sidebar: API key tiap AI
 # ---------------------------------------------------------------------------
 st.sidebar.header("⚙️ Pengaturan Sistem")
 
-saved_api_key = ""
-if "GEMINI_API_KEY" in st.secrets:
-    saved_api_key = st.secrets["GEMINI_API_KEY"]
+api_keys = {}
+for nama, cfg in PROVIDERS.items():
+    if cfg["secret"] in st.secrets and st.secrets[cfg["secret"]]:
+        st.sidebar.success(f"🔑 {nama}: key permanen aktif")
+        api_keys[nama] = st.secrets[cfg["secret"]]
+    else:
+        isi = st.sidebar.text_input(
+            f"API Key {nama}:", type="password", key=f"key_{cfg['secret']}"
+        )
+        if isi:
+            api_keys[nama] = isi
 
-if saved_api_key:
-    st.sidebar.success("🔑 API Key Permanen Terdeteksi & Aktif!")
-    api_key = saved_api_key
-else:
-    api_key = st.sidebar.text_input(
-        "Masukkan Gemini API Key:",
-        type="password",
-        help="Dapatkan di Google AI Studio (Gratis)",
+if api_keys:
+    ai_utama = st.sidebar.selectbox("AI Utama:", list(api_keys))
+    pakai_cadangan = st.sidebar.checkbox(
+        "Pakai AI lain sebagai cadangan jika gagal",
+        value=True,
+        disabled=len(api_keys) < 2,
     )
+    URUTAN_AI = [ai_utama] + (
+        [n for n in api_keys if n != ai_utama] if pakai_cadangan else []
+    )
+else:
+    URUTAN_AI = []
+    st.sidebar.info("Isi minimal satu API Key untuk mulai.")
 
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
+KOLOM_DB = [
+    "Tanggal",
+    "Nama Kegiatan",
+    "Kategori",
+    "Penanggung Jawab",
+    "Jumlah Massa",
+    "Produk Terbit",
+]
+PRODUK_OPSI = list(FORMAT_OUTPUT) + ["LAINNYA"]
+DB_FILE = "data_rekap.csv"
+
+
+def simpan_db():
+    """Simpan rekap ke file CSV lokal agar tidak hilang saat halaman di-refresh."""
+    try:
+        st.session_state.db_kegiatan.to_csv(DB_FILE, index=False, encoding="utf-8-sig")
+    except Exception as e:
+        st.sidebar.warning(f"Rekap gagal disimpan ke file: {e}")
+
+
 if "db_kegiatan" not in st.session_state:
-    st.session_state.db_kegiatan = pd.DataFrame(
-        columns=[
-            "Tanggal",
-            "Nama Kegiatan",
-            "Kategori",
-            "Penanggung Jawab",
-            "Jumlah Massa",
-            "Produk Terbit",
-        ]
-    )
+    if os.path.exists(DB_FILE):
+        try:
+            st.session_state.db_kegiatan = pd.read_csv(DB_FILE, dtype=str).fillna("")
+        except Exception:
+            st.session_state.db_kegiatan = pd.DataFrame(columns=KOLOM_DB)
+    else:
+        st.session_state.db_kegiatan = pd.DataFrame(columns=KOLOM_DB)
+if "ver_rekap" not in st.session_state:
+    st.session_state.ver_rekap = 0
+if "import_preview" not in st.session_state:
+    st.session_state.import_preview = None
 if "kategori_auto" not in st.session_state:
-    st.session_state.kategori_auto = {}  # {signature berkas: kategori}
+    st.session_state.kategori_auto = {}
 if "hasil_dokumen" not in st.session_state:
-    st.session_state.hasil_dokumen = []  # hasil tetap tampil setelah klik download
+    st.session_state.hasil_dokumen = []
 
 
 # ---------------------------------------------------------------------------
-# Fungsi bantu
+# Lapisan AI (satu antarmuka untuk semua penyedia)
 # ---------------------------------------------------------------------------
-def signature(f):
-    return f"{f.name}_{f.size}"
-
-
 def siapkan_berkas(f):
-    """Ubah berkas unggahan menjadi konten yang bisa dikirim ke Gemini."""
+    """Bentuk netral: {'teks': ...} atau {'data': bytes, 'mime': ...}."""
     data = f.getvalue()
     name = f.name.lower()
     if name.endswith(".txt"):
-        return data.decode("utf-8", errors="ignore")
+        return {"teks": data.decode("utf-8", errors="ignore")}
     if name.endswith(".docx"):
         doc = Document(io.BytesIO(data))
         teks = "\n".join(p.text for p in doc.paragraphs)
         for tabel in doc.tables:
             for baris in tabel.rows:
                 teks += "\n" + " | ".join(c.text for c in baris.cells)
-        return teks
-    return types.Part.from_bytes(data=data, mime_type=f.type)
+        return {"teks": teks}
+    return {"data": data, "mime": f.type, "nama": f.name}
 
 
-def panggil_gemini(client, contents):
-    """Panggil Gemini dengan failover model. 404 langsung pindah model."""
-    last_error = None
-    for model_name in MODELS_TO_TRY:
-        for _ in range(3):
-            try:
-                resp = client.models.generate_content(
-                    model=model_name, contents=contents
-                )
-                if resp and resp.text:
-                    return resp
-            except Exception as err:
-                last_error = err
-                msg = str(err)
-                if "404" in msg or "NOT_FOUND" in msg:
-                    break
-                if "503" in msg or "UNAVAILABLE" in msg or "429" in msg:
-                    time.sleep(2)
-                    continue
-                break
-    raise Exception(
-        f"Server Gemini sibuk atau model tidak tersedia. Detail: {last_error}"
+def _gemini(key, model, berkas, prompt):
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=key)
+    if "teks" in berkas:
+        isi = berkas["teks"]
+    else:
+        isi = types.Part.from_bytes(data=berkas["data"], mime_type=berkas["mime"])
+    return client.models.generate_content(model=model, contents=[isi, prompt]).text
+
+
+def _claude(key, model, berkas, prompt):
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=key)
+    if "teks" in berkas:
+        blok = [{"type": "text", "text": berkas["teks"]}]
+    else:
+        b64 = base64.standard_b64encode(berkas["data"]).decode()
+        tipe = "document" if berkas["mime"] == "application/pdf" else "image"
+        blok = [
+            {
+                "type": tipe,
+                "source": {
+                    "type": "base64",
+                    "media_type": berkas["mime"],
+                    "data": b64,
+                },
+            }
+        ]
+    blok.append({"type": "text", "text": prompt})
+    r = client.messages.create(
+        model=model,
+        max_tokens=8000,
+        messages=[{"role": "user", "content": blok}],
     )
+    return "".join(b.text for b in r.content if b.type == "text")
 
 
-def deteksi_kategori(client, f):
-    """Tentukan kategori kegiatan otomatis dari isi berkas."""
+def _openai(key, model, berkas, prompt):
+    from openai import OpenAI
+
+    client = OpenAI(api_key=key)
+    if "teks" in berkas:
+        blok = [{"type": "input_text", "text": berkas["teks"]}]
+    else:
+        b64 = base64.standard_b64encode(berkas["data"]).decode()
+        url = f"data:{berkas['mime']};base64,{b64}"
+        if berkas["mime"] == "application/pdf":
+            blok = [
+                {
+                    "type": "input_file",
+                    "filename": berkas.get("nama", "berkas.pdf"),
+                    "file_data": url,
+                }
+            ]
+        else:
+            blok = [{"type": "input_image", "image_url": url}]
+    blok.append({"type": "input_text", "text": prompt})
+    r = client.responses.create(
+        model=model, input=[{"role": "user", "content": blok}]
+    )
+    return r.output_text
+
+
+FUNGSI_AI = {
+    "Gemini (Google)": _gemini,
+    "Claude (Anthropic)": _claude,
+    "ChatGPT (OpenAI)": _openai,
+}
+
+
+def panggil_ai(berkas, prompt):
+    """Coba AI sesuai urutan; kembalikan (teks, label AI yang berhasil)."""
+    if not URUTAN_AI:
+        raise Exception("Belum ada API Key yang diisi.")
+    errors = []
+    for prov in URUTAN_AI:
+        for model in PROVIDERS[prov]["models"]:
+            for _ in range(3):
+                try:
+                    teks = FUNGSI_AI[prov](api_keys[prov], model, berkas, prompt)
+                    if teks:
+                        return teks, f"{prov} · {model}"
+                    break
+                except Exception as err:
+                    msg = str(err)
+                    errors.append(f"{prov}/{model}: {msg[:160]}")
+                    sementara = (
+                        "503" in msg
+                        or "429" in msg
+                        or "UNAVAILABLE" in msg
+                        or "overloaded" in msg.lower()
+                    )
+                    if sementara:
+                        time.sleep(2)
+                        continue
+                    break  # 404, auth, dll: langsung model/AI berikutnya
+    raise Exception("Semua AI gagal. Detail: " + " | ".join(errors[-3:]))
+
+
+# ---------------------------------------------------------------------------
+# Fungsi bantu aplikasi
+# ---------------------------------------------------------------------------
+def signature(f):
+    return f"{f.name}_{f.size}"
+
+
+def deteksi_kategori(f):
     prompt = (
         "Baca berkas ini lalu tentukan SATU kategori kegiatan yang paling sesuai "
         "dari daftar berikut beserta cakupannya:\n- "
@@ -151,12 +277,11 @@ def deteksi_kategori(client, f):
         "tanpa penjelasan tambahan."
     )
     try:
-        resp = panggil_gemini(client, [siapkan_berkas(f), prompt])
-        jawab = resp.text.strip().upper()
+        teks, _ = panggil_ai(siapkan_berkas(f), prompt)
+        jawab = teks.strip().upper()
         for k in KATEGORI:
             if k.upper() == jawab or k.upper() in jawab:
                 return k
-        # Kecocokan longgar: kata pertama kategori
         for k in KATEGORI:
             if k.split()[0].upper() in jawab:
                 return k
@@ -179,6 +304,50 @@ def buat_prompt(keyword_cmd, kategori):
     - Jika perintah 'infosus': Buat Nota Dinas Pengantar kepada Kapolres Ciamis dan Lembar Informasi Khusus berklasifikasi RAHASIA lengkap dengan distribusi baku.
     - Jika perintah 'kirkat': Buat Perkiraan Keadaan Intelijen Singkat (Nota Dinas, Pendahuluan terperinci, Keadaan Sasaran, Analisa, Kesimpulan, dan Saran).
     """
+
+
+def rapikan_baris(d):
+    """Normalisasi hasil ekstraksi AI ke kolom rekap."""
+    kat = str(d.get("kategori", "")).strip().upper()
+    kategori = next((k for k in KATEGORI if k.upper() == kat), None)
+    if kategori is None:
+        kategori = next((k for k in KATEGORI if k.split()[0].upper() in kat), KATEGORI_DEFAULT)
+    prod = str(d.get("produk_terbit", "")).strip().upper()
+    produk = next((p for p in FORMAT_OUTPUT if p == prod), None)
+    if produk is None:
+        produk = next((p for p in FORMAT_OUTPUT if prod and prod in p), "LAINNYA")
+    return {
+        "Tanggal": str(d.get("tanggal", "")).strip(),
+        "Nama Kegiatan": str(d.get("nama_kegiatan", "")).strip(),
+        "Kategori": kategori,
+        "Penanggung Jawab": str(d.get("penanggung_jawab", "")).strip(),
+        "Jumlah Massa": str(d.get("jumlah_massa", "")).strip(),
+        "Produk Terbit": produk,
+    }
+
+
+def ekstrak_data_lama(f):
+    """Ekstrak data rekap dari satu dokumen lama memakai AI."""
+    prompt = (
+        "Baca dokumen intelijen ini lalu ekstrak data untuk rekapitulasi. "
+        "Jawab HANYA satu objek JSON valid tanpa teks lain, dengan kunci:\n"
+        '{"tanggal": "YYYY-MM-DD (tanggal surat/kegiatan, kosongkan jika tidak ada)", '
+        '"nama_kegiatan": "...", '
+        f'"kategori": "salah satu dari: {", ".join(KATEGORI)}", '
+        '"penanggung_jawab": "nama penyelenggara/pemohon/penanggung jawab", '
+        '"jumlah_massa": "perkiraan jumlah massa/peserta jika ada", '
+        f'"produk_terbit": "salah satu dari: {", ".join(FORMAT_OUTPUT)}"}}\n'
+        "Jangan mengarang: jika data tidak ada di dokumen, isi dengan string kosong."
+    )
+    teks, _ = panggil_ai(siapkan_berkas(f), prompt)
+    awal, akhir = teks.find("{"), teks.rfind("}")
+    if awal == -1 or akhir == -1:
+        raise Exception("AI tidak mengembalikan JSON")
+    data = json.loads(teks[awal : akhir + 1])
+    baris = rapikan_baris(data)
+    if not baris["Nama Kegiatan"]:
+        baris["Nama Kegiatan"] = f.name.rsplit(".", 1)[0]
+    return baris
 
 
 def buat_docx(teks):
@@ -204,22 +373,21 @@ with tab1:
         accept_multiple_files=True,
     )
 
-    perintah = st.selectbox("Pilih Format Output yang Ingin Dibuat:", list(FORMAT_OUTPUT))
+    perintah = st.selectbox(
+        "Pilih Format Output yang Ingin Dibuat:", list(FORMAT_OUTPUT)
+    )
 
-    # Deteksi kategori otomatis untuk setiap berkas baru
     kategori_pilihan = {}
     if uploaded_files:
-        st.markdown("**Kategori / Bidang Kegiatan** (terpilih otomatis dari isi berkas, tetap bisa diubah):")
-        client_deteksi = genai.Client(api_key=api_key) if api_key else None
-
+        st.markdown(
+            "**Kategori / Bidang Kegiatan** (terpilih otomatis dari isi berkas, tetap bisa diubah):"
+        )
         for f in uploaded_files:
             sig = signature(f)
             if sig not in st.session_state.kategori_auto:
-                if client_deteksi:
+                if URUTAN_AI:
                     with st.spinner(f"Mendeteksi kategori: {f.name}"):
-                        st.session_state.kategori_auto[sig] = deteksi_kategori(
-                            client_deteksi, f
-                        )
+                        st.session_state.kategori_auto[sig] = deteksi_kategori(f)
                 else:
                     st.session_state.kategori_auto[sig] = KATEGORI_DEFAULT
 
@@ -234,18 +402,15 @@ with tab1:
                 label_visibility="collapsed",
             )
 
-        if not api_key:
+        if not URUTAN_AI:
             st.info("Masukkan API Key agar kategori dapat terdeteksi otomatis.")
 
     if st.button("🚀 Proses & Buat Dokumen"):
-        if not api_key:
-            st.error(
-                "Silakan masukkan Gemini API Key terlebih dahulu di sidebar atau atur di Secrets!"
-            )
+        if not URUTAN_AI:
+            st.error("Silakan isi minimal satu API Key di sidebar atau atur di Secrets!")
         elif not uploaded_files:
             st.warning("Silakan unggah minimal satu berkas bahan terlebih dahulu!")
         else:
-            client = genai.Client(api_key=api_key)
             keyword_cmd = FORMAT_OUTPUT[perintah]
             st.session_state.hasil_dokumen = []
             progres = st.progress(0.0)
@@ -254,12 +419,12 @@ with tab1:
                 sig = signature(f)
                 kategori = kategori_pilihan.get(sig, KATEGORI_DEFAULT)
                 try:
-                    with st.spinner(f"Memproses {f.name} ({i + 1}/{len(uploaded_files)})..."):
-                        resp = panggil_gemini(
-                            client,
-                            [siapkan_berkas(f), buat_prompt(keyword_cmd, kategori)],
+                    with st.spinner(
+                        f"Memproses {f.name} ({i + 1}/{len(uploaded_files)})..."
+                    ):
+                        teks, ai_dipakai = panggil_ai(
+                            siapkan_berkas(f), buat_prompt(keyword_cmd, kategori)
                         )
-                    teks = resp.text
                     st.session_state.hasil_dokumen.append(
                         {
                             "nama": f.name,
@@ -267,6 +432,7 @@ with tab1:
                             "kode": keyword_cmd,
                             "teks": teks,
                             "docx": buat_docx(teks),
+                            "ai": ai_dipakai,
                         }
                     )
                     st.session_state.db_kegiatan = pd.concat(
@@ -287,16 +453,17 @@ with tab1:
                         ],
                         ignore_index=True,
                     )
+                    simpan_db()
                 except Exception as e:
                     st.error(f"Gagal memproses {f.name}: {e}")
                 progres.progress((i + 1) / len(uploaded_files))
 
-    # Tampilkan hasil (tetap ada setelah klik tombol download)
     if st.session_state.hasil_dokumen:
         st.success(f"{len(st.session_state.hasil_dokumen)} dokumen berhasil diproses!")
         st.subheader("📝 Hasil Dokumen:")
         for idx, h in enumerate(st.session_state.hasil_dokumen):
             with st.expander(f"{h['perintah']} — {h['nama']}", expanded=(idx == 0)):
+                st.caption(f"Dibuat oleh: {h['ai']}")
                 st.text_area(
                     "Hasil Teks Baku:", h["teks"], height=350, key=f"teks_{idx}"
                 )
@@ -312,20 +479,148 @@ with tab1:
 with tab2:
     st.subheader("📊 Dasbor Rekapitulasi Kegiatan Intelkam")
 
-    if st.session_state.db_kegiatan.empty:
-        st.info("Belum ada data kegiatan terdaftar. Silakan unggah dokumen di tab Produk Intelijen.")
+    # ---------------- Impor data lama ----------------
+    with st.expander(
+        "📥 Upload Berkas Lama (Januari s.d. sekarang)",
+        expanded=st.session_state.db_kegiatan.empty,
+    ):
+        st.caption(
+            "Unggah dokumen yang sudah pernah dibuat (PDF, DOCX, TXT, foto/scan) agar "
+            "datanya otomatis diekstrak ke rekapitulasi, atau unggah file rekap "
+            "CSV/Excel dengan kolom: " + ", ".join(KOLOM_DB) + "."
+        )
+        berkas_impor = st.file_uploader(
+            "Pilih berkas lama",
+            type=["pdf", "docx", "txt", "png", "jpg", "csv", "xlsx"],
+            accept_multiple_files=True,
+            key="uploader_impor",
+        )
+
+        if st.button("🔍 Analisis Berkas Lama"):
+            if not berkas_impor:
+                st.warning("Silakan unggah minimal satu berkas.")
+            else:
+                baris, gagal = [], []
+                progres = st.progress(0.0)
+                for i, f in enumerate(berkas_impor):
+                    nama = f.name.lower()
+                    try:
+                        if nama.endswith((".csv", ".xlsx")):
+                            df_in = (
+                                pd.read_csv(f, dtype=str)
+                                if nama.endswith(".csv")
+                                else pd.read_excel(f, dtype=str)
+                            ).fillna("")
+                            for kol in KOLOM_DB:
+                                if kol not in df_in.columns:
+                                    df_in[kol] = ""
+                            baris.extend(df_in[KOLOM_DB].to_dict("records"))
+                        else:
+                            if not URUTAN_AI:
+                                raise Exception("Belum ada API Key untuk analisis AI.")
+                            with st.spinner(f"Menganalisis {f.name} ({i + 1}/{len(berkas_impor)})..."):
+                                baris.append(ekstrak_data_lama(f))
+                    except Exception as e:
+                        gagal.append(f"{f.name}: {e}")
+                        baris.append(
+                            rapikan_baris({"nama_kegiatan": f.name.rsplit(".", 1)[0]})
+                        )
+                    progres.progress((i + 1) / len(berkas_impor))
+
+                df_prev = pd.DataFrame(baris, columns=KOLOM_DB).fillna("")
+                if not df_prev.empty:
+                    tgl = pd.to_datetime(df_prev["Tanggal"], errors="coerce")
+                    df_prev["Tanggal"] = tgl.dt.strftime("%Y-%m-%d").fillna("")
+                st.session_state.import_preview = df_prev
+                for g in gagal:
+                    st.warning(f"Gagal dianalisis, isi manual: {g}")
+
+        prev = st.session_state.get("import_preview")
+        if prev is not None and not prev.empty:
+            st.markdown(
+                "**Pratinjau hasil ekstraksi**: periksa dan koreksi dulu. "
+                "Hasil AI bisa keliru pada tanggal atau nama. "
+                "Tanggal wajib format `YYYY-MM-DD`. Baris yang tidak perlu bisa dihapus."
+            )
+            edited_prev = st.data_editor(
+                prev,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="editor_preview",
+                column_config={
+                    "Kategori": st.column_config.SelectboxColumn(
+                        "Kategori", options=KATEGORI
+                    ),
+                    "Produk Terbit": st.column_config.SelectboxColumn(
+                        "Produk Terbit", options=PRODUK_OPSI
+                    ),
+                },
+            )
+            b1, b2 = st.columns(2)
+            if b1.button("✅ Simpan ke Rekapitulasi"):
+                df_baru = edited_prev.fillna("").copy()
+                tgl = pd.to_datetime(df_baru["Tanggal"], errors="coerce")
+                if df_baru.empty:
+                    st.warning("Tidak ada baris untuk disimpan.")
+                elif tgl.isna().any():
+                    st.error(
+                        f"{int(tgl.isna().sum())} baris punya tanggal kosong/tidak valid. "
+                        "Perbaiki dulu di tabel."
+                    )
+                else:
+                    df_baru["Tanggal"] = tgl.dt.strftime("%Y-%m-%d")
+                    lama = st.session_state.db_kegiatan
+                    gabung = pd.concat([lama, df_baru], ignore_index=True)
+                    gabung = gabung.drop_duplicates(
+                        subset=["Tanggal", "Nama Kegiatan", "Produk Terbit"],
+                        keep="first",
+                    ).reset_index(drop=True)
+                    ditambah = len(gabung) - len(lama)
+                    st.session_state.db_kegiatan = gabung
+                    simpan_db()
+                    st.session_state.import_preview = None
+                    st.session_state.ver_rekap += 1
+                    st.success(
+                        f"{ditambah} data ditambahkan "
+                        f"({len(df_baru) - ditambah} duplikat dilewati)."
+                    )
+                    st.rerun()
+            if b2.button("❌ Batalkan"):
+                st.session_state.import_preview = None
+                st.rerun()
+
+    # ---------------- Dasbor ----------------
+    db = st.session_state.db_kegiatan
+
+    if db.empty:
+        st.info(
+            "Belum ada data kegiatan terdaftar. Unggah dokumen di tab Produk Intelijen "
+            "atau impor berkas lama di atas."
+        )
     else:
+        db_tgl = pd.to_datetime(db["Tanggal"], errors="coerce")
+        tgl_min = db_tgl.min().date() if db_tgl.notna().any() else datetime.now().date()
+        tgl_max = db_tgl.max().date() if db_tgl.notna().any() else datetime.now().date()
+
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             kat_filter = st.multiselect(
                 "Filter Kategori:",
-                options=st.session_state.db_kegiatan["Kategori"].unique(),
-                default=st.session_state.db_kegiatan["Kategori"].unique(),
+                options=sorted(db["Kategori"].unique()),
+                default=sorted(db["Kategori"].unique()),
+            )
+        with col_f2:
+            periode = st.date_input(
+                "Filter Periode:",
+                value=(tgl_min, tgl_max),
+                min_value=min(tgl_min, tgl_max),
+                max_value=max(tgl_max, datetime.now().date()),
             )
 
-        df_filtered = st.session_state.db_kegiatan[
-            st.session_state.db_kegiatan["Kategori"].isin(kat_filter)
-        ]
+        mask = db["Kategori"].isin(kat_filter)
+        if isinstance(periode, (tuple, list)) and len(periode) == 2:
+            mask &= (db_tgl.dt.date >= periode[0]) & (db_tgl.dt.date <= periode[1])
+        df_filtered = db[mask]
 
         m1, m2, m3 = st.columns(3)
         m1.metric("Total Kegiatan", len(df_filtered))
@@ -333,20 +628,59 @@ with tab2:
             "Kategori Terbanyak",
             df_filtered["Kategori"].mode()[0] if not df_filtered.empty else "-",
         )
-        m3.metric("Produk Terbit", len(df_filtered["Produk Terbit"].dropna()))
+        m3.metric("Produk Terbit", len(df_filtered["Produk Terbit"].replace("", pd.NA).dropna()))
 
         st.markdown("---")
 
         c1, c2 = st.columns([6, 4])
         with c1:
             st.write("### Daftar Rekapitulasi Kegiatan")
-            st.dataframe(df_filtered, use_container_width=True)
+            df_tampil = df_filtered.copy()
+            df_tampil.insert(0, "Hapus", False)
+            edited = st.data_editor(
+                df_tampil,
+                hide_index=True,
+                use_container_width=True,
+                disabled=KOLOM_DB,
+                column_config={"Hapus": st.column_config.CheckboxColumn("Hapus")},
+                key=f"editor_rekap_{st.session_state.ver_rekap}",
+            )
+            terpilih = edited.index[edited["Hapus"]]
+
+            d1, d2 = st.columns(2)
+            if d1.button(
+                f"🗑️ Hapus {len(terpilih)} data terpilih",
+                disabled=len(terpilih) == 0,
+            ):
+                st.session_state.db_kegiatan = db.drop(index=terpilih).reset_index(drop=True)
+                simpan_db()
+                st.session_state.ver_rekap += 1
+                st.rerun()
+
+            with d2:
+                yakin = st.checkbox("Saya yakin menghapus SEMUA data")
+                if st.button("⚠️ Hapus Semua Data", disabled=not yakin):
+                    st.session_state.db_kegiatan = pd.DataFrame(columns=KOLOM_DB)
+                    simpan_db()
+                    st.session_state.ver_rekap += 1
+                    st.rerun()
+
+            st.download_button(
+                "💾 Unduh Cadangan Rekap (CSV)",
+                data=db.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"rekap_intelkam_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+            )
+
         with c2:
             st.write("### Grafik Sebaran Kategori")
-            fig = px.pie(
-                df_filtered,
-                names="Kategori",
-                title="Persentase Kegiatan per Bidang",
-                hole=0.4,
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if df_filtered.empty:
+                st.info("Tidak ada data pada filter ini.")
+            else:
+                fig = px.pie(
+                    df_filtered,
+                    names="Kategori",
+                    title="Persentase Kegiatan per Bidang",
+                    hole=0.4,
+                )
+                st.plotly_chart(fig, use_container_width=True)
