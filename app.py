@@ -47,7 +47,7 @@ KATEGORI_KETERANGAN = {
 }
 
 # Urutan prioritas model (ganti sesuai daftar model aktif di akun Anda)
-MODELS_TO_TRY = ["gemini-2.5-flash", "gemini-2.0-flash"]
+MODELS_TO_TRY = ["gemini-3.8-flash", "gemini-2.5-flash"]
 
 st.title("🛡️ Sistem Informasi & Rekapitulasi Intelkam Polres Ciamis")
 st.caption(
