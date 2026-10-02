@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import os
+import re
 import time
 from datetime import datetime
 
@@ -51,7 +52,7 @@ KATEGORI_KETERANGAN = {
 PROVIDERS = {
     "Gemini (Google)": {
         "secret": "GEMINI_API_KEY",
-        "models": ["gemini-3.8-flash", "gemini-2.5-flash"],
+        "models": ["gemini-3.8-flash"],
     },
     "Claude (Anthropic)": {
         "secret": "ANTHROPIC_API_KEY",
@@ -250,7 +251,6 @@ def panggil_ai(berkas, prompt):
                     errors.append(f"{prov}/{model}: {msg[:160]}")
                     sementara = (
                         "503" in msg
-                        or "429" in msg
                         or "UNAVAILABLE" in msg
                         or "overloaded" in msg.lower()
                     )
@@ -258,6 +258,11 @@ def panggil_ai(berkas, prompt):
                         time.sleep(2)
                         continue
                     break  # 404, auth, dll: langsung model/AI berikutnya
+    if any("429" in e or "RESOURCE_EXHAUSTED" in e for e in errors):
+        raise Exception(
+            "Kuota API habis (429). Tunggu kuota reset, aktifkan billing, "
+            "atau isi API Key AI lain di sidebar."
+        )
     raise Exception("Semua AI gagal. Detail: " + " | ".join(errors[-3:]))
 
 
@@ -322,6 +327,56 @@ def rapikan_baris(d):
         "Kategori": kategori,
         "Penanggung Jawab": str(d.get("penanggung_jawab", "")).strip(),
         "Jumlah Massa": str(d.get("jumlah_massa", "")).strip(),
+        "Produk Terbit": produk,
+    }
+
+
+BULAN_ID = {
+    "januari": 1, "februari": 2, "maret": 3, "april": 4, "mei": 5, "juni": 6,
+    "juli": 7, "agustus": 8, "september": 9, "oktober": 10, "november": 11,
+    "desember": 12,
+}
+
+
+def cari_tanggal(teks):
+    """Cari tanggal pertama di teks (YYYY-MM-DD, DD-MM-YYYY, atau '5 Mei 2026')."""
+    pola = [
+        (r"(\d{4})-(\d{1,2})-(\d{1,2})", lambda m: (m[0], m[1], m[2])),
+        (r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", lambda m: (m[2], m[1], m[0])),
+        (
+            r"(\d{1,2})\s+(" + "|".join(BULAN_ID) + r")\s+(\d{4})",
+            lambda m: (m[2], BULAN_ID[m[1].lower()], m[0]),
+        ),
+    ]
+    for rx, ambil in pola:
+        for m in re.finditer(rx, teks, flags=re.I):
+            try:
+                y, mo, d = (int(x) for x in ambil(m.groups()))
+                return datetime(y, mo, d).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+    return ""
+
+
+def fallback_tanpa_ai(f):
+    """Isi baris rekap tanpa AI: dari nama file (awalan LI/SI/dst.) dan isi teks."""
+    nama = f.name.rsplit(".", 1)[0]
+    produk = "LAINNYA"
+    kode = {v.upper(): k for k, v in FORMAT_OUTPUT.items()}
+    m = re.match(r"^\s*(SKK|SI|STTP|LI|INFOSUS|KIRKAT)\s*[=\-\u2013:_]+\s*(.*)$", nama, re.I)
+    if m:
+        produk = kode.get(m.group(1).upper(), "LAINNYA")
+        nama = m.group(2).strip() or nama
+    try:
+        teks = siapkan_berkas(f).get("teks", "")
+    except Exception:
+        teks = ""
+    return {
+        "Tanggal": cari_tanggal(teks),
+        "Nama Kegiatan": nama,
+        "Kategori": KATEGORI_DEFAULT,
+        "Penanggung Jawab": "",
+        "Jumlah Massa": "",
         "Produk Terbit": produk,
     }
 
@@ -520,11 +575,10 @@ with tab2:
                                 raise Exception("Belum ada API Key untuk analisis AI.")
                             with st.spinner(f"Menganalisis {f.name} ({i + 1}/{len(berkas_impor)})..."):
                                 baris.append(ekstrak_data_lama(f))
+                            time.sleep(3)  # jeda agar tidak melewati batas permintaan per menit
                     except Exception as e:
-                        gagal.append(f"{f.name}: {e}")
-                        baris.append(
-                            rapikan_baris({"nama_kegiatan": f.name.rsplit(".", 1)[0]})
-                        )
+                        gagal.append(f"{f.name}: {str(e)[:300]}")
+                        baris.append(fallback_tanpa_ai(f))
                     progres.progress((i + 1) / len(berkas_impor))
 
                 df_prev = pd.DataFrame(baris, columns=KOLOM_DB).fillna("")
@@ -533,7 +587,7 @@ with tab2:
                     df_prev["Tanggal"] = tgl.dt.strftime("%Y-%m-%d").fillna("")
                 st.session_state.import_preview = df_prev
                 for g in gagal:
-                    st.warning(f"Gagal dianalisis, isi manual: {g}")
+                    st.warning(f"AI gagal, baris diisi otomatis dari nama file/isi teks (periksa manual): {g}")
 
         prev = st.session_state.get("import_preview")
         if prev is not None and not prev.empty:
