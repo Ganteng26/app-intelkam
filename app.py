@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import textwrap
 import time
 from datetime import datetime
 
@@ -112,6 +113,7 @@ KOLOM_DB = [
     "Produk Terbit",
 ]
 PRODUK_OPSI = list(FORMAT_OUTPUT) + ["LAINNYA"]
+FORMAT_TGL = "%d-%m-%y"  # DD-MM-YY, contoh 21-09-26
 DB_FILE = "data_rekap.csv"
 
 
@@ -360,7 +362,9 @@ def cari_tanggal(teks):
         for m in re.finditer(rx, teks, flags=re.I):
             try:
                 y, mo, d = (int(x) for x in ambil(m.groups()))
-                return datetime(y, mo, d).strftime("%Y-%m-%d")
+                if not 2000 <= y <= datetime.now().year + 1:
+                    continue
+                return datetime(y, mo, d).strftime(FORMAT_TGL)
             except Exception:
                 continue
     return ""
@@ -414,6 +418,86 @@ def ekstrak_data_lama(f):
 
 
 BULAN_SINGKAT = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
+_BULAN_NAMA = {
+    "januari": 1, "jan": 1, "februari": 2, "feb": 2, "maret": 3, "mar": 3,
+    "april": 4, "apr": 4, "mei": 5, "may": 5, "juni": 6, "jun": 6,
+    "juli": 7, "jul": 7, "agustus": 8, "agu": 8, "agt": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9, "oktober": 10, "okt": 10, "oct": 10,
+    "november": 11, "nov": 11, "desember": 12, "des": 12, "dec": 12,
+}
+
+
+def _parse_satu(v):
+    """Baca satu tanggal secara ketat. Format dikenali: YYYY-MM-DD, DD-MM-YYYY (hari dulu),
+    DD-MM-YY, dan '5 Mei 2026'. Selain itu atau tahun di luar 2000..tahun depan -> NaT."""
+    t = str(v).strip().lower()
+    if not t or t in ("nan", "nat", "none"):
+        return pd.NaT
+    try:
+        m = re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ t].*)?", t)
+        if m:
+            y, mo, d = (int(x) for x in m.groups())
+        else:
+            m = re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2})", t)
+            if m:
+                d, mo, y = (int(x) for x in m.groups())
+                if y < 100:
+                    y += 2000
+            else:
+                m = re.fullmatch(r"(\d{1,2})\s+([a-z]+)\.?\s+(\d{4})", t)
+                if not m or m.group(2) not in _BULAN_NAMA:
+                    return pd.NaT
+                d, mo, y = int(m.group(1)), _BULAN_NAMA[m.group(2)], int(m.group(3))
+        if not 2000 <= y <= datetime.now().year + 1:
+            return pd.NaT
+        return pd.Timestamp(datetime(y, mo, d))
+    except Exception:
+        return pd.NaT
+
+
+def parse_tanggal(seri):
+    """Seri teks tanggal -> datetime (NaT jika tidak valid)."""
+    return pd.to_datetime(seri.map(_parse_satu))
+
+
+def combo_chart_bidang(labels, tabel, garis, judul, nama_garis):
+    """Combo chart: batang bertumpuk per bidang + garis produk terbit."""
+    garis = [int(x) for x in garis]
+    fig = go.Figure()
+    for kat in tabel.columns:
+        fig.add_trace(go.Bar(x=labels, y=[int(v) for v in tabel[kat]], name=kat))
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=garis,
+            name=nama_garis,
+            mode="lines+markers",
+            line=dict(color="#ff7f0e", width=3),
+            marker=dict(size=8),
+        )
+    )
+    total = [int(v) for v in tabel.sum(axis=1)]
+    puncak = max(total + garis + [1])
+    fig.update_layout(
+        title=judul,
+        barmode="stack",
+        colorway=["#1f77b4", "#2ca02c", "#9467bd", "#8c564b", "#17becf"],
+        height=420,
+        legend=dict(orientation="h", y=-0.3),
+        margin=dict(t=60, b=40, l=40, r=20),
+        yaxis=dict(title="Jumlah", range=[0, puncak * 1.25], tickformat="d"),
+    )
+    return fig
+
+
+def hitung_per_bulan(tgl, rentang):
+    """Jumlah baris per bulan; semua bulan dalam rentang tampil, yang kosong bernilai 0."""
+    tgl = tgl.dropna()
+    if tgl.empty:
+        return pd.Series(0, index=rentang)
+    return tgl.dt.to_period("M").value_counts().reindex(rentang, fill_value=0)
 
 
 def norm_kegiatan(nama):
@@ -555,7 +639,7 @@ with tab1:
                             pd.DataFrame(
                                 [
                                     {
-                                        "Tanggal": datetime.now().strftime("%Y-%m-%d"),
+                                        "Tanggal": datetime.now().strftime(FORMAT_TGL),
                                         "Nama Kegiatan": f.name.rsplit(".", 1)[0],
                                         "Kategori": kategori,
                                         "Penanggung Jawab": "Tercatat di Dokumen",
@@ -650,8 +734,8 @@ with tab2:
 
                 df_prev = pd.DataFrame(baris, columns=KOLOM_DB).fillna("")
                 if not df_prev.empty:
-                    tgl = pd.to_datetime(df_prev["Tanggal"], errors="coerce")
-                    df_prev["Tanggal"] = tgl.dt.strftime("%Y-%m-%d").fillna("")
+                    tgl = parse_tanggal(df_prev["Tanggal"])
+                    df_prev["Tanggal"] = tgl.dt.strftime(FORMAT_TGL).fillna("")
                 st.session_state.import_preview = df_prev
                 for g in gagal:
                     st.session_state.pesan_impor.append(
@@ -670,7 +754,7 @@ with tab2:
             st.markdown(
                 "**Pratinjau hasil ekstraksi**: periksa dan koreksi dulu. "
                 "Hasil AI bisa keliru pada tanggal atau nama. "
-                "Tanggal wajib format `YYYY-MM-DD`. Baris yang tidak perlu bisa dihapus."
+                "Tanggal wajib format `DD-MM-YY` (contoh `21-09-26`). Baris yang tidak perlu bisa dihapus."
             )
             edited_prev = st.data_editor(
                 prev,
@@ -678,6 +762,9 @@ with tab2:
                 use_container_width=True,
                 key=f"editor_preview_{st.session_state.uploader_impor_ver}",
                 column_config={
+                    "Tanggal": st.column_config.TextColumn(
+                        "Tanggal", help="Format DD-MM-YY, contoh 21-09-26"
+                    ),
                     "Kategori": st.column_config.SelectboxColumn(
                         "Kategori", options=KATEGORI
                     ),
@@ -689,16 +776,16 @@ with tab2:
             b1, b2 = st.columns(2)
             if b1.button("✅ Simpan ke Rekapitulasi"):
                 df_baru = edited_prev.fillna("").copy()
-                tgl = pd.to_datetime(df_baru["Tanggal"], errors="coerce")
+                tgl = parse_tanggal(df_baru["Tanggal"])
                 if df_baru.empty:
                     st.warning("Tidak ada baris untuk disimpan.")
                 elif tgl.isna().any():
                     st.error(
-                        f"{int(tgl.isna().sum())} baris punya tanggal kosong/tidak valid. "
+                        f"{int(tgl.isna().sum())} baris punya tanggal kosong/tidak valid (tahun harus 2000-{datetime.now().year + 1}). "
                         "Perbaiki dulu di tabel."
                     )
                 else:
-                    df_baru["Tanggal"] = tgl.dt.strftime("%Y-%m-%d")
+                    df_baru["Tanggal"] = tgl.dt.strftime(FORMAT_TGL)
                     lama = st.session_state.db_kegiatan
                     gabung = pd.concat([lama, df_baru], ignore_index=True)
                     gabung = gabung.drop_duplicates(
@@ -722,145 +809,263 @@ with tab2:
     # ---------------- Dasbor ----------------
     db = st.session_state.db_kegiatan
 
+    # Seragamkan format tanggal lama (mis. 2026-09-21 atau 21/09/2026) ke DD-MM-YY
+    if not db.empty:
+        _t = parse_tanggal(db["Tanggal"])
+        _iso = _t.dt.strftime(FORMAT_TGL)
+        _ubah = _t.notna() & (_iso != db["Tanggal"])
+        if _ubah.any():
+            db.loc[_ubah, "Tanggal"] = _iso[_ubah]
+            simpan_db()
+
     if db.empty:
         st.info(
-            "Belum ada data kegiatan terdaftar. Unggah dokumen di tab Produk Intelijen "
-            "atau impor berkas lama di atas."
+            "Belum ada data kegiatan. Grafik di bawah masih bernilai 0 dan akan terisi setelah "
+            "ada data (unggah dokumen di tab Produk Intelijen atau impor berkas lama di atas)."
+        )
+
+    # Rentang tanggal bawaan: 1 Januari tahun ini (atau data tertua) sampai hari ini
+    db_tgl = parse_tanggal(db["Tanggal"])
+    hari_ini = datetime.now().date()
+    awal_tahun = hari_ini.replace(month=1, day=1)
+    if db_tgl.notna().any():
+        tgl_min = min(db_tgl.min().date(), awal_tahun)
+        tgl_max = max(db_tgl.max().date(), hari_ini)
+    else:
+        tgl_min, tgl_max = awal_tahun, hari_ini
+
+    # Semua kategori selalu tersedia di filter, termasuk yang masih kosong
+    daftar_kat = list(KATEGORI) + sorted(
+        c for c in set(db["Kategori"]) if c and c not in KATEGORI
+    )
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        kat_pilih = st.multiselect(
+            "Filter Kategori:",
+            options=["SEMUA"] + daftar_kat,
+            default=["SEMUA"],
+            help="SEMUA = gabungan seluruh kategori, supaya terlihat bidang mana yang paling banyak.",
+        )
+        semua_kat = ("SEMUA" in kat_pilih) or not kat_pilih
+        kolom_kat = daftar_kat if semua_kat else [c for c in daftar_kat if c in kat_pilih]
+    with col_f2:
+        periode = st.date_input(
+            "Filter Periode:",
+            value=(tgl_min, tgl_max),
+            min_value=tgl_min,
+            max_value=tgl_max,
+            format="DD-MM-YYYY",
+        )
+
+    if isinstance(periode, (tuple, list)) and len(periode) == 2:
+        p_awal, p_akhir = periode
+    else:
+        p_awal, p_akhir = tgl_min, tgl_max
+
+    mask = pd.Series(True, index=db.index) if semua_kat else db["Kategori"].isin(kolom_kat)
+    awal = pd.Timestamp(p_awal)
+    akhir = pd.Timestamp(p_akhir) + pd.Timedelta(days=1)
+    # Data bertanggal tidak valid tetap ditampilkan agar bisa diperbaiki/dihapus
+    mask &= ((db_tgl >= awal) & (db_tgl < akhir)) | db_tgl.isna()
+    df_filtered = db[mask]
+
+    # Kegiatan yang sama (nama + tanggal sama) hanya dihitung sekali,
+    # walaupun punya beberapa jenis produk.
+    df_f = df_filtered.copy()
+    df_f["_tgl"] = parse_tanggal(df_f["Tanggal"])
+    df_f["_key"] = [
+        norm_kegiatan(n) + "|" + str(t)
+        for n, t in zip(df_f["Nama Kegiatan"], df_f["Tanggal"])
+    ]
+    df_f["Produk Terbit"] = df_f["Produk Terbit"].replace("", "LAINNYA")
+    kegiatan_unik = df_f.drop_duplicates("_key")
+    produk_unik = df_f.drop_duplicates(["_key", "Produk Terbit"])
+
+    buruk = kegiatan_unik[kegiatan_unik["_tgl"].isna()]
+    if len(buruk):
+        contoh = "; ".join(
+            f"{str(r['Nama Kegiatan'])[:35]} → '{r['Tanggal']}'"
+            for _, r in buruk.head(5).iterrows()
+        )
+        st.warning(
+            f"{len(buruk)} kegiatan bertanggal kosong/tidak valid tidak ikut grafik per bulan "
+            f"(format yang benar DD-MM-YY, tahun 2000-{datetime.now().year + 1}). "
+            f"Contoh: {contoh}. Perbaiki di tabel bawah lalu klik Simpan Perubahan."
+        )
+
+    # Per bulan: setiap bulan dalam periode tampil, juga yang bernilai 0
+    rentang = pd.period_range(
+        pd.Timestamp(p_awal).to_period("M"), pd.Timestamp(p_akhir).to_period("M"), freq="M"
+    )
+    label_bulan = [f"{BULAN_SINGKAT[p.month - 1]} {p.year}" for p in rentang]
+    k_valid = kegiatan_unik[kegiatan_unik["_tgl"].notna()]
+    if k_valid.empty:
+        tab_bulan = pd.DataFrame(0, index=rentang, columns=kolom_kat)
+    else:
+        tab_bulan = pd.crosstab(
+            k_valid["_tgl"].dt.to_period("M"), k_valid["Kategori"]
+        ).reindex(index=rentang, columns=kolom_kat, fill_value=0)
+    bulan_k = tab_bulan.sum(axis=1)
+    bulan_p = hitung_per_bulan(produk_unik["_tgl"], rentang)
+
+    # Per bidang dan per jenis produk: semua tampil, juga yang bernilai 0
+    cat_k = kegiatan_unik["Kategori"].value_counts().reindex(kolom_kat, fill_value=0)
+    cat_p = produk_unik["Kategori"].value_counts().reindex(kolom_kat, fill_value=0)
+    kolom_prod = list(FORMAT_OUTPUT) + sorted(
+        set(produk_unik["Produk Terbit"]) - set(FORMAT_OUTPUT)
+    )
+    prod_c = produk_unik["Produk Terbit"].value_counts().reindex(kolom_prod, fill_value=0)
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Total Kegiatan", len(kegiatan_unik))
+    m2.metric("Total Produk Terbit", len(produk_unik))
+    if bulan_k.max() > 0:
+        p_max = bulan_k.idxmax()
+        m3.metric(
+            "Bulan Terbanyak",
+            f"{BULAN_SINGKAT[p_max.month - 1]} {p_max.year}",
+            f"{int(bulan_k.max())} kegiatan",
+            delta_color="off",
         )
     else:
-        db_tgl = pd.to_datetime(db["Tanggal"], errors="coerce")
-        tgl_min = db_tgl.min().date() if db_tgl.notna().any() else datetime.now().date()
-        tgl_max = db_tgl.max().date() if db_tgl.notna().any() else datetime.now().date()
+        m3.metric("Bulan Terbanyak", "-")
+    m4.metric("Bidang Terbanyak", cat_k.idxmax() if cat_k.max() > 0 else "-")
+    m5.metric("Bidang Aktif", f"{int((cat_k > 0).sum())} dari {len(kolom_kat)}")
 
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            kat_filter = st.multiselect(
-                "Filter Kategori:",
-                options=sorted(db["Kategori"].unique()),
-                default=sorted(db["Kategori"].unique()),
+    st.caption(
+        "Grafik menghitung kegiatan unik: kegiatan yang sama (nama dan tanggal sama) "
+        "hanya dihitung sekali meski punya beberapa jenis produk. "
+        "Bulan, bidang, dan jenis produk yang masih kosong tetap tampil bernilai 0. "
+        + (
+            "Pada mode SEMUA, batang per bulan ditumpuk berdasarkan bidang."
+            if semua_kat
+            else "Batang merah = nilai tertinggi."
+        )
+    )
+    st.markdown("---")
+
+    st.write("### Status Bidang Kegiatan")
+    st.caption("AKTIF = ada kegiatan pada periode dan filter yang dipilih. TIDAK AKTIF = belum ada kegiatan (bernilai 0).")
+    terakhir = kegiatan_unik.groupby("Kategori")["_tgl"].max()
+    status_df = pd.DataFrame(
+        {
+            "Status": ["🟢 AKTIF" if cat_k.get(c, 0) > 0 else "⚪ TIDAK AKTIF" for c in kolom_kat],
+            "Bidang": kolom_kat,
+            "Jumlah Kegiatan": [int(cat_k.get(c, 0)) for c in kolom_kat],
+            "Produk Terbit": [int(cat_p.get(c, 0)) for c in kolom_kat],
+            "Kegiatan Terakhir": [
+                terakhir[c].strftime(FORMAT_TGL)
+                if c in terakhir.index and pd.notna(terakhir[c])
+                else "-"
+                for c in kolom_kat
+            ],
+        }
+    )
+    st.dataframe(status_df, hide_index=True, use_container_width=True)
+
+    if semua_kat:
+        fig_bulan = combo_chart_bidang(
+            label_bulan,
+            tab_bulan,
+            bulan_p.values,
+            "Jumlah Kegiatan per Bidang & Produk Terbit per Bulan",
+            "Produk Terbit",
+        )
+    else:
+        fig_bulan = combo_chart(
+            label_bulan,
+            bulan_k.values,
+            bulan_p.values,
+            "Jumlah Kegiatan & Produk Terbit per Bulan",
+            "Jumlah Kegiatan",
+            "Produk Terbit",
+        )
+    st.plotly_chart(fig_bulan, use_container_width=True)
+
+    g1, g2 = st.columns(2)
+    with g1:
+        st.plotly_chart(
+            combo_chart(
+                [c.replace(" (", "<br>(") for c in kolom_kat],
+                cat_k.values,
+                cat_p.values,
+                "Kegiatan per Bidang",
+                "Jumlah Kegiatan",
+                "Produk Terbit",
+            ),
+            use_container_width=True,
+        )
+    with g2:
+        fig_prod = go.Figure(
+            go.Bar(
+                x=["<br>".join(textwrap.wrap(p, 14)) for p in kolom_prod],
+                y=[int(v) for v in prod_c.values],
+                text=[int(v) for v in prod_c.values],
+                textposition="outside",
+                marker_color="#2ca02c",
             )
-        with col_f2:
-            periode = st.date_input(
-                "Filter Periode:",
-                value=(tgl_min, tgl_max),
-                min_value=min(tgl_min, tgl_max),
-                max_value=max(tgl_max, datetime.now().date()),
-            )
+        )
+        fig_prod.update_layout(
+            title="Jumlah Produk Intelijen yang Dibuat",
+            height=400,
+            margin=dict(t=60, b=40, l=40, r=20),
+            yaxis=dict(
+                title="Jumlah",
+                range=[0, max(int(prod_c.max()), 1) * 1.25],
+                tickformat="d",
+            ),
+        )
+        st.plotly_chart(fig_prod, use_container_width=True)
 
-        mask = db["Kategori"].isin(kat_filter)
-        if isinstance(periode, (tuple, list)) and len(periode) == 2:
-            mask &= (db_tgl.dt.date >= periode[0]) & (db_tgl.dt.date <= periode[1])
-        df_filtered = db[mask]
-
-        if df_filtered.empty:
-            st.info("Tidak ada data pada filter ini.")
-        else:
-            # Kegiatan yang sama (nama + tanggal sama) hanya dihitung sekali,
-            # walaupun punya beberapa jenis produk.
-            df_f = df_filtered.copy()
-            df_f["_tgl"] = pd.to_datetime(df_f["Tanggal"], errors="coerce")
-            df_f["_key"] = (
-                df_f["Nama Kegiatan"].map(norm_kegiatan) + "|" + df_f["Tanggal"].astype(str)
-            )
-            df_f["Produk Terbit"] = df_f["Produk Terbit"].replace("", "LAINNYA")
-            kegiatan_unik = df_f.drop_duplicates("_key")
-            produk_unik = df_f.drop_duplicates(["_key", "Produk Terbit"])
-
-            # Per bulan (bulan tanpa kegiatan tetap tampil bernilai 0)
-            tgl_valid = df_f["_tgl"].dropna()
-            bulan_k = bulan_p = None
-            if not tgl_valid.empty:
-                rentang = pd.period_range(
-                    tgl_valid.min().to_period("M"), tgl_valid.max().to_period("M"), freq="M"
-                )
-                bulan_k = kegiatan_unik["_tgl"].dt.to_period("M").value_counts().reindex(rentang, fill_value=0)
-                bulan_p = produk_unik["_tgl"].dt.to_period("M").value_counts().reindex(rentang, fill_value=0)
-                label_bulan = [f"{BULAN_SINGKAT[p.month - 1]} {p.year}" for p in rentang]
-
-            cat_k = kegiatan_unik["Kategori"].value_counts()
-            cat_p = produk_unik["Kategori"].value_counts()
-            urut_kat = list(cat_k.index) + [c for c in cat_p.index if c not in cat_k.index]
-            prod_c = produk_unik["Produk Terbit"].value_counts()
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total Kegiatan", len(kegiatan_unik))
-            m2.metric("Total Produk Terbit", len(produk_unik))
-            if bulan_k is not None and bulan_k.max() > 0:
-                p_max = bulan_k.idxmax()
-                m3.metric("Bulan Terbanyak", f"{BULAN_SINGKAT[p_max.month - 1]} {p_max.year}", f"{int(bulan_k.max())} kegiatan", delta_color="off")
-            else:
-                m3.metric("Bulan Terbanyak", "-")
-            m4.metric("Bidang Terbanyak", cat_k.index[0] if not cat_k.empty else "-")
-
-            st.caption(
-                "Grafik menghitung kegiatan unik: kegiatan yang sama (nama dan tanggal sama) "
-                "hanya dihitung sekali meski punya beberapa jenis produk. "
-                "Batang merah = nilai tertinggi."
-            )
-            st.markdown("---")
-
-            if bulan_k is not None:
-                st.plotly_chart(
-                    combo_chart(
-                        label_bulan,
-                        bulan_k.values,
-                        bulan_p.values,
-                        "Jumlah Kegiatan & Produk Terbit per Bulan",
-                        "Jumlah Kegiatan",
-                        "Produk Terbit",
-                    ),
-                    use_container_width=True,
-                )
-            else:
-                st.info("Grafik per bulan belum bisa dibuat karena tanggal belum valid.")
-
-            g1, g2 = st.columns(2)
-            with g1:
-                st.plotly_chart(
-                    combo_chart(
-                        [c.replace(" (", "<br>(") for c in urut_kat],
-                        [cat_k.get(c, 0) for c in urut_kat],
-                        [cat_p.get(c, 0) for c in urut_kat],
-                        "Kegiatan per Bidang",
-                        "Jumlah Kegiatan",
-                        "Produk Terbit",
-                    ),
-                    use_container_width=True,
-                )
-            with g2:
-                fig_prod = go.Figure(
-                    go.Bar(
-                        x=list(prod_c.index),
-                        y=[int(v) for v in prod_c.values],
-                        text=[int(v) for v in prod_c.values],
-                        textposition="outside",
-                        marker_color="#2ca02c",
-                    )
-                )
-                fig_prod.update_layout(
-                    title="Jumlah Produk Intelijen yang Dibuat",
-                    height=400,
-                    margin=dict(t=60, b=40, l=40, r=20),
-                    yaxis=dict(title="Jumlah", range=[0, max(int(prod_c.max()), 1) * 1.25], tickformat="d"),
-                )
-                st.plotly_chart(fig_prod, use_container_width=True)
-
-        # ---------------- Tabel & hapus data ----------------
+    # ---------------- Tabel: edit, simpan, hapus ----------------
+    if not db.empty:
         st.markdown("---")
         st.write("### Daftar Rekapitulasi Kegiatan")
+        st.caption("Sel bisa diedit langsung (misalnya memperbaiki tanggal). Klik Simpan Perubahan setelahnya.")
         df_tampil = df_filtered.copy()
         df_tampil.insert(0, "Hapus", False)
         edited = st.data_editor(
             df_tampil,
             hide_index=True,
             use_container_width=True,
-            disabled=KOLOM_DB,
-            column_config={"Hapus": st.column_config.CheckboxColumn("Hapus")},
+            column_config={
+                "Hapus": st.column_config.CheckboxColumn("Hapus"),
+                "Tanggal": st.column_config.TextColumn(
+                    "Tanggal", help="Format DD-MM-YY, contoh 21-09-26"
+                ),
+                "Kategori": st.column_config.SelectboxColumn(
+                    "Kategori", options=sorted(set(KATEGORI) | set(db["Kategori"]))
+                ),
+                "Produk Terbit": st.column_config.SelectboxColumn(
+                    "Produk Terbit", options=sorted(set(PRODUK_OPSI) | set(db["Produk Terbit"]))
+                ),
+            },
             key=f"editor_rekap_{st.session_state.ver_rekap}",
         )
         terpilih = edited.index[edited["Hapus"]]
+        berubah = not (
+            edited[KOLOM_DB].fillna("").astype(str).equals(
+                df_filtered[KOLOM_DB].fillna("").astype(str)
+            )
+        )
 
-        d1, d2 = st.columns(2)
+        d0, d1, d2 = st.columns(3)
+        if d0.button("💾 Simpan Perubahan", disabled=not berubah):
+            baru = edited[KOLOM_DB].fillna("").astype(str).copy()
+            tgl_baru = parse_tanggal(baru["Tanggal"])
+            if tgl_baru.isna().any():
+                st.error(
+                    f"{int(tgl_baru.isna().sum())} baris punya tanggal kosong/tidak valid "
+                    f"(format DD-MM-YY, tahun 2000-{datetime.now().year + 1}). Perbaiki dulu."
+                )
+            else:
+                baru["Tanggal"] = tgl_baru.dt.strftime(FORMAT_TGL)
+                st.session_state.db_kegiatan.loc[baru.index, KOLOM_DB] = baru
+                simpan_db()
+                st.session_state.ver_rekap += 1
+                st.rerun()
+
         if d1.button(
             f"🗑️ Hapus {len(terpilih)} data terpilih",
             disabled=len(terpilih) == 0,
