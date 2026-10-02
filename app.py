@@ -45,7 +45,7 @@ if "db_kegiatan" not in st.session_state:
             "Nomor": 1,
             "Nomor Dokumen": "LI/01/I/2026/IK",
             "Tanggal Dokumen": "2026-01-10",
-            "Jenis Dokumen": "Laporan Informasi (LI)",
+            "Jenis Dokumen": "LAPORAN INFORMASI",
             "Nama/Judul Kegiatan": "Konser Musik Awal Tahun",
             "Kategori Kegiatan": "Konser/Hiburan",
             "Lokasi": "Alun-alun Ciamis",
@@ -58,7 +58,7 @@ if "db_kegiatan" not in st.session_state:
             "Nomor": 2,
             "Nomor Dokumen": "SI/05/II/2026/IK",
             "Tanggal Dokumen": "2026-02-15",
-            "Jenis Dokumen": "Surat Izin (SI)",
+            "Jenis Dokumen": "SURAT IZIN",
             "Nama/Judul Kegiatan": "Turnamen Sepak Bola Bupati Cup",
             "Kategori Kegiatan": "Kompetisi/Pertandingan",
             "Lokasi": "Stadion Galuh Ciamis",
@@ -84,7 +84,32 @@ tab1, tab2, tab3, tab4 = st.tabs(
 # TAB 1: UPLOAD & GENERATOR DOKUMEN
 # ==========================================
 with tab1:
-    st.subheader("1. Unggah Bahan / Berkas Kegiatan (Bisa Banyak Sekaligus)")
+    st.subheader(
+        "1. Unggah Bahan / Berkas Kegiatan (Bisa Mengunggah Banyak File Sekaligus)"
+    )
+
+    # Pilihan Bulan Arsip (Dari Bulan 1 sampai Bulan Oktober / Berjalan)
+    daftar_bulan = [
+        "Januari",
+        "Februari",
+        "Maret",
+        "April",
+        "Mei",
+        "Juni",
+        "Juli",
+        "Agustus",
+        "September",
+        "Oktober",
+        "November",
+        "Desember",
+    ]
+    pilih_bulan_arsip = st.selectbox(
+        "Pilih Bulan Arsip Kegiatan:",
+        daftar_bulan,
+        index=9,
+        key="pilih_bulan_arsip",
+    )  # Default Oktober (Bulan 10)
+
     uploaded_files = st.file_uploader(
         "Pilih file (PDF, TXT, DOCX, atau Foto/Scan Surat) - Dapat memilih lebih dari satu file",
         type=["pdf", "docx", "txt", "png", "jpg"],
@@ -94,14 +119,14 @@ with tab1:
     col1, col2 = st.columns(2)
     with col1:
         perintah = st.selectbox(
-            "Pilih Format Output Dokumen (Kata Kunci):",
+            "Pilih Format Output Dokumen:",
             [
-                "skp (Surat Keterangan Kepolisian)",
-                "si (Surat Izin)",
-                "sttp (Surat Tanda Terima Pemberitahuan)",
-                "li (Laporan Informasi)",
-                "infosus (Informasi Khusus)",
-                "kirkat (Perkiraan Keadaan Singkat)",
+                "SURAT KETERANGAN KEPOLISIAN",
+                "SURAT IZIN",
+                "SURAT TANDA TERIMA PEMBERITAHUAN",
+                "LAPORAN INFORMASI",
+                "INFORMASI KHUSUS",
+                "PERKIRAAN KEADAAN SINGKAT",
             ],
             key="tab1_perintah",
         )
@@ -136,7 +161,7 @@ with tab1:
             ):
                 try:
                     client = genai.Client(api_key=api_key)
-                    keyword_cmd = perintah.split()[0].lower()
+                    keyword_cmd = perintah.lower()
 
                     for uploaded_file in uploaded_files:
                         bytes_data = uploaded_file.getvalue()
@@ -150,16 +175,10 @@ with tab1:
                             )
 
                         prompt = f"""
-                        Anda adalah Asisten Intelkam Polres Ciamis. Pelajari data yang diunggah dan buatkan draft teks produk intelijen sesuai kode perintah: {keyword_cmd}.
+                        Anda adalah Asisten Intelkam Polres Ciamis. Pelajari data yang diunggah dan buatkan draft teks produk intelijen dengan format: {perintah}.
                         Aturan Ketat & Format Baku Sat Intelkam Polres Ciamis:
                         - Pejabat Penandatangan Resmi: KASAT INTELKAM POLRES CIAMIS, AKP RAHMAT KOMARA, S.H., M.H., AJUN KOMISARIS POLISI NRP 70030155.
                         - Gunakan bahasa baku dinas Kepolisian Republik Indonesia, lengkap, terstruktur, tidak disingkat sembarangan.
-                        - Jika perintah 'skp': Buat Surat Keterangan Kepolisian sesuai format baku.
-                        - Jika perintah 'si': Buat Surat Izin dengan struktur tabel 2 kolom dan 4 poin catatan/kewajiban.
-                        - Jika perintah 'sttp': Buat Surat Tanda Terima Pemberitahuan sesuai format baku.
-                        - Jika perintah 'li': Buat Laporan Informasi lengkap (Sumber, Hubungan, Cara, Waktu, Nilai A-1, Fakta 5W+1H, Analisa, Prediksi, Langkah, Rekomendasi).
-                        - Jika perintah 'infosus': Buat Nota Dinas Pengantar dan Lembar Infosus berklasifikasi RAHASIA.
-                        - If perintah 'kirkat': Buat Perkiraan Keadaan Intelijen Singkat.
                         """
 
                         models_to_try = [
@@ -217,44 +236,18 @@ with tab1:
                         st.download_button(
                             label=f"📥 Download Word ({uploaded_file.name})",
                             data=bio.getvalue(),
-                            file_name=f"Produk_{keyword_cmd.upper()}_{uploaded_file.name.split('.')[0]}.docx",
+                            file_name=f"Produk_{perintah.replace(' ', '_')}_{uploaded_file.name.split('.')[0]}.docx",
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         )
 
                         # Catat ke Database
-                        bulan_nama = [
-                            "Januari",
-                            "Februari",
-                            "Maret",
-                            "April",
-                            "Mei",
-                            "Juni",
-                            "Juli",
-                            "Agustus",
-                            "September",
-                            "Oktober",
-                            "November",
-                            "Desember",
-                        ][tgl_kegiatan_input.month - 1]
-
-                        jenis_dok_map = {
-                            "skp": "Surat Keterangan Kepolisian (SKP)",
-                            "si": "Surat Izin (SI)",
-                            "sttp": "Surat Tanda Terima Pemberitahuan",
-                            "li": "Laporan Informasi (LI)",
-                            "infosus": "Informasi Khusus",
-                            "kirkat": "Perkiraan Keadaan Singkat",
-                        }
-
                         new_row = {
                             "Nomor": len(st.session_state.db_kegiatan) + 1,
-                            "Nomor Dokumen": f"{keyword_cmd.upper()}/{len(st.session_state.db_kegiatan)+1}/X/2026/IK",
+                            "Nomor Dokumen": f"DOC/{len(st.session_state.db_kegiatan)+1}/X/2026/IK",
                             "Tanggal Dokumen": datetime.today().strftime(
                                 "%Y-%m-%d"
                             ),
-                            "Jenis Dokumen": jenis_dok_map.get(
-                                keyword_cmd, keyword_cmd.upper()
-                            ),
+                            "Jenis Dokumen": perintah,
                             "Nama/Judul Kegiatan": uploaded_file.name.split(
                                 "."
                             )[0],
@@ -263,7 +256,7 @@ with tab1:
                             "Tanggal Kegiatan": tgl_kegiatan_input.strftime(
                                 "%Y-%m-%d"
                             ),
-                            "Bulan": bulan_nama,
+                            "Bulan": pilih_bulan_arsip,
                             "Tahun": tgl_kegiatan_input.year,
                             "Keterangan": "Selesai diproses sistem",
                         }
@@ -286,7 +279,7 @@ with tab2:
         "🔄 Modul Konversi Teks/Catatan Mentah Menjadi Format Produk Intelijen"
     )
     st.markdown(
-        "Gunakan fitur ini untuk mengubah catatan kasar, transkrip, laporan lapangan mentah, atau narasi bebas menjadi format resmi intelijen (Laporan Informasi, Analisis, dll.) secara otomatis menggunakan AI."
+        "Gunakan fitur ini untuk mengubah catatan kasar, transkrip, laporan lapangan mentah, atau narasi bebas menjadi format resmi intelijen secara otomatis menggunakan AI."
     )
 
     raw_text_input = st.text_area(
@@ -298,10 +291,12 @@ with tab2:
     target_format = st.selectbox(
         "Pilih Target Format Intelijen:",
         [
-            "Laporan Informasi (LI) Lengkap",
-            "Informasi Khusus (Infosus)",
-            "Perkiraan Keadaan Singkat (Kirkat)",
-            "Catatan Analisis Singkat",
+            "LAPORAN INFORMASI",
+            "INFORMASI KHUSUS",
+            "PERKIRAAN KEADAAN SINGKAT",
+            "SURAT IZIN",
+            "SURAT KETERANGAN KEPOLISIAN",
+            "SURAT TANDA TERIMA PEMBERITAHUAN",
         ],
     )
 
@@ -343,7 +338,7 @@ with tab2:
                     st.download_button(
                         label="📥 Download Hasil Konversi (.docx)",
                         data=bio_conv.getvalue(),
-                        file_name=f"Konversi_Format_Intelijen_{datetime.today().strftime('%Y%m%d_%H%M%S')}.docx",
+                        file_name=f"Konversi_{target_format.replace(' ', '_')}_{datetime.today().strftime('%Y%m%d_%H%M%S')}.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     )
                 except Exception as e:
@@ -393,34 +388,34 @@ with tab3:
         total_dok = len(df_filtered)
         tot_si = len(
             df_filtered[
-                df_filtered["Jenis Dokumen"].str.contains("Surat Izin", case=False)
+                df_filtered["Jenis Dokumen"].str.contains("SURAT IZIN", case=False)
             ]
         )
         tot_li = len(
             df_filtered[
                 df_filtered["Jenis Dokumen"].str.contains(
-                    "Laporan Informasi", case=False
+                    "LAPORAN INFORMASI", case=False
                 )
             ]
         )
         tot_infosus = len(
             df_filtered[
                 df_filtered["Jenis Dokumen"].str.contains(
-                    "Informasi Khusus", case=False
+                    "INFORMASI KHUSUS", case=False
                 )
             ]
         )
         tot_kirkat = len(
             df_filtered[
                 df_filtered["Jenis Dokumen"].str.contains(
-                    "Perkiraan Keadaan", case=False
+                    "PERKIRAAN KEADAAN", case=False
                 )
             ]
         )
         tot_skp = len(
             df_filtered[
                 df_filtered["Jenis Dokumen"].str.contains(
-                    "Surat Keterangan Kepolisian", case=False
+                    "SURAT KETERANGAN KEPOLISIAN", case=False
                 )
             ]
         )
