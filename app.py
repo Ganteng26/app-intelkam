@@ -15,18 +15,28 @@ st.set_page_config(
     page_icon="🛡",
 )
 
-st.title("🛡️ Sistem Informasi & Rekapitulasi Intelkam")
+st.title("🛡️ Sistem Informasi & Rekapitulasi Intelkam Polres Ciamis")
 st.caption(
-    "Aplikasi Pengolahan Produk Intelijen Baku & Dasbor Rekapitulasi Kegiatan"
+    "Aplikasi Pengolahan Produk Intelijen Baku (SI, STTP, LI, INFOSUS, KIRKAT) & Dasbor Rekapitulasi Kegiatan"
 )
 
-# Sidebar Input API Key
+# Sidebar Input API Key & Konfigurasi Sistem
 st.sidebar.header("⚙️ Pengaturan Sistem")
-api_key = st.sidebar.text_input(
-    "Masukkan Gemini API Key:",
-    type="password",
-    help="Dapatkan di Google AI Studio (Gratis)",
-)
+
+# Logika Membaca API Key Permanen dari secrets.toml atau input manual
+saved_api_key = ""
+if "GEMINI_API_KEY" in st.secrets:
+    saved_api_key = st.secrets["GEMINI_API_KEY"]
+
+if saved_api_key:
+    st.sidebar.success("🔑 API Key Permanen Terdeteksi & Aktif!")
+    api_key = saved_api_key
+else:
+    api_key = st.sidebar.text_input(
+        "Masukkan Gemini API Key:",
+        type="password",
+        help="Dapatkan di Google AI Studio (Gratis)",
+    )
 
 # Inisialisasi Database Lokal / Catatan Kegiatan
 if "db_kegiatan" not in st.session_state:
@@ -59,13 +69,12 @@ with tab1:
         perintah = st.selectbox(
             "Pilih Format Output yang Ingin Dibuat (Kata Kunci):",
             [
-                "skk (Surat Keterangan Kepolisian)",
+                "all (Seluruh Format: SI, STTP, LI, INFOSUS, KIRKAT)",
+                "si (Surat Izin Kepolisian)",
                 "sttp (Surat Tanda Terima Pemberitahuan)",
-                "si (Surat Izin Keramaian)",
                 "li (Laporan Informasi)",
                 "infosus (Informasi Khusus)",
                 "kirkat (Perkiraan Keadaan Singkat)",
-                "all (Seluruh Format)",
             ],
         )
     with col2:
@@ -84,13 +93,13 @@ with tab1:
     if st.button("🚀 Proses & Buat Dokumen"):
         if not api_key:
             st.error(
-                "Silakan masukkan Gemini API Key terlebih dahulu di sidebar!"
+                "Silakan masukkan Gemini API Key terlebih dahulu di sidebar atau atur di Secrets!"
             )
         elif not uploaded_file:
             st.warning("Silakan unggah berkas bahan terlebih dahulu!")
         else:
             with st.spinner(
-                "AI sedang menganalisis berkas dan menyusun draf baku..."
+                "AI sedang menganalisis berkas dan menyusun draf baku sesuai format Sat Intelkam..."
             ):
                 try:
                     client = genai.Client(api_key=api_key)
@@ -107,26 +116,33 @@ with tab1:
                             mime_type=mime_type,
                         )
 
+                    # Ekstraksi kata kunci perintah
+                    keyword_cmd = perintah.split()[0].lower()
+
                     prompt = f"""
-                    Anda adalah Asisten Intelkam Polres Ciamis. Pelajari data yang diunggah dan buatkan draft teks produk intelijen sesuai kode perintah: {perintah}.
-                    Gunakan format baku resmi Sat Intelkam Polres Ciamis:
-                    - Pejabat: KASAT INTELKAM POLRES CIAMIS, AKP RAHMAT KOMARA, S.H., M.H., NRP 70030155.
-                    - Bahasa baku dinas Polri, tidak disingkat sembarangan.
-                    - Jika format SKK, sertakan detail Sponsor, Paspor, ITAS, Penjamin, dan Masa Berlaku.
+                    Anda adalah Asisten Intelkam Polres Ciamis. Pelajari data yang diunggah dan buatkan draft teks produk intelijen sesuai kode perintah: {keyword_cmd}.
+                    Aturan Ketat & Format Baku Sat Intelkam Polres Ciamis:
+                    - Pejabat Penandatangan Resmi: KASAT INTELKAM POLRES CIAMIS, AKP RAHMAT KOMARA, S.H., M.H., AJUN KOMISARIS POLISI NRP 70030155.
+                    - Gunakan bahasa baku dinas Kepolisian Republik Indonesia, lengkap, terstruktur, tidak disingkat sembarangan.
+                    - Jika perintah 'si': Buat Surat Izin dengan struktur tabel 2 kolom (Pertimbangan, Dasar, Memperhatikan, Memberikan Izin) dan 4 poin catatan/kewajiban.
+                    - Jika perintah 'sttp': Buat Surat Tanda Terima Pemberitahuan sesuai format baku.
+                    - Jika perintah 'li': Buat Laporan Informasi dengan header baku (Sumber, Hubungan, Cara, Waktu, Nilai A-1), Fakta-Fakta 5W+1H, Analisa, Prediksi, Langkah-langkah, dan Rekomendasi secara kaya.
+                    - Jika perintah 'infosus': Buat Nota Dinas Pengantar kepada Kapolres Ciamis dan Lembar Informasi Khusus berklasifikasi RAHRASIA lengkap dengan distribusi baku.
+                    - Jika perintah 'kirkat': Buat Perkiraan Keadaan Intelijen Singkat (Nota Dinas, Pendahuluan terperinci, Keadaan Sasaran, Analisa, Kesimpulan, dan Saran).
+                    - Jika perintah 'all': Buat kelima dokumen tersebut secara lengkap dan berurutan.
                     """
 
-                    # Daftar model prioritas jika terjadi lonjakan beban server (503)
+                    # Daftar model prioritas terbaru dengan mekanisme failover (mengatasi 404 / 503)
                     models_to_try = [
                         "gemini-2.0-flash",
                         "gemini-1.5-flash",
-                        "gemini-2.5-flash",
+                        "gemini-3.8-flash",
                     ]
                     response = None
                     last_error = None
 
                     for model_name in models_to_try:
                         try:
-                            # Percobaan request dengan penanganan retry
                             for attempt in range(3):
                                 try:
                                     response = client.models.generate_content(
@@ -139,8 +155,9 @@ with tab1:
                                     if (
                                         "503" in str(err)
                                         or "UNAVAILABLE" in str(err)
+                                        or "404" in str(err)
                                     ):
-                                        time.sleep(2)  # Jeda 2 detik sebelum coba lagi
+                                        time.sleep(2)
                                     else:
                                         raise err
                             if response:
@@ -151,7 +168,7 @@ with tab1:
 
                     if not response:
                         raise Exception(
-                            f"Server Google Gemini sedang sibuk. Detail: {last_error}"
+                            f"Server Google Gemini sedang sibuk atau model tidak tersedia. Detail: {last_error}"
                         )
 
                     st.success("Dokumen Berhasil Diproses!")
@@ -171,7 +188,7 @@ with tab1:
                     st.download_button(
                         label="📥 Download Sebagai File Word (.docx)",
                         data=bio.getvalue(),
-                        file_name=f"Produk_Intelkam_{perintah.split()[0]}_{datetime.now().strftime('%Y%m%d')}.docx",
+                        file_name=f"Produk_Intelkam_{keyword_cmd.upper()}_{datetime.now().strftime('%Y%m%d')}.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     )
 
@@ -182,7 +199,7 @@ with tab1:
                         "Kategori": kategori_kegiatan,
                         "Penanggung Jawab": "Tercatat di Dokumen",
                         "Jumlah Massa": "1 / Sesuai Data",
-                        "Produk Terbit": perintah.split()[0].upper(),
+                        "Produk Terbit": keyword_cmd.upper(),
                     }
                     st.session_state.db_kegiatan = pd.concat(
                         [
