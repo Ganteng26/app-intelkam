@@ -17,7 +17,7 @@ st.set_page_config(
 
 st.title("🛡️ Sistem Informasi & Rekapitulasi Intelkam Polres Ciamis")
 st.caption(
-    "Aplikasi Pengolahan Produk Intelijen Baku (SI, STTP, LI, INFOSUS, KIRKAT) & Dasbor Rekapitulasi Kegiatan"
+    "Aplikasi Pengolahan Produk Intelijen Baku (SKK, SI, STTP, LI, INFOSUS, KIRKAT) & Dasbor Rekapitulasi Kegiatan"
 )
 
 # Sidebar Input API Key & Konfigurasi Sistem
@@ -69,7 +69,7 @@ with tab1:
         perintah = st.selectbox(
             "Pilih Format Output yang Ingin Dibuat (Kata Kunci):",
             [
-                "all (Seluruh Format: SI, STTP, LI, INFOSUS, KIRKAT)",
+                "skk (Surat Keterangan Kepolisian / POA)",
                 "si (Surat Izin Kepolisian)",
                 "sttp (Surat Tanda Terima Pemberitahuan)",
                 "li (Laporan Informasi)",
@@ -124,12 +124,12 @@ with tab1:
                     Aturan Ketat & Format Baku Sat Intelkam Polres Ciamis:
                     - Pejabat Penandatangan Resmi: KASAT INTELKAM POLRES CIAMIS, AKP RAHMAT KOMARA, S.H., M.H., AJUN KOMISARIS POLISI NRP 70030155.
                     - Gunakan bahasa baku dinas Kepolisian Republik Indonesia, lengkap, terstruktur, tidak disingkat sembarangan.
+                    - Jika perintah 'skk': Buat Surat Keterangan Kepolisian (SKK) untuk Orang Asing/POA, sertakan detail identitas, Sponsor, Paspor, ITAS/ITAP, Penjamin, dan Masa Berlaku.
                     - Jika perintah 'si': Buat Surat Izin dengan struktur tabel 2 kolom (Pertimbangan, Dasar, Memperhatikan, Memberikan Izin) dan 4 poin catatan/kewajiban.
                     - Jika perintah 'sttp': Buat Surat Tanda Terima Pemberitahuan sesuai format baku.
                     - Jika perintah 'li': Buat Laporan Informasi dengan header baku (Sumber, Hubungan, Cara, Waktu, Nilai A-1), Fakta-Fakta 5W+1H, Analisa, Prediksi, Langkah-langkah, dan Rekomendasi secara kaya.
-                    - Jika perintah 'infosus': Buat Nota Dinas Pengantar kepada Kapolres Ciamis dan Lembar Informasi Khusus berklasifikasi RAHRASIA lengkap dengan distribusi baku.
+                    - Jika perintah 'infosus': Buat Nota Dinas Pengantar kepada Kapolres Ciamis dan Lembar Informasi Khusus berklasifikasi RAHASIA lengkap dengan distribusi baku.
                     - Jika perintah 'kirkat': Buat Perkiraan Keadaan Intelijen Singkat (Nota Dinas, Pendahuluan terperinci, Keadaan Sasaran, Analisa, Kesimpulan, dan Saran).
-                    - Jika perintah 'all': Buat kelima dokumen tersebut secara lengkap dan berurutan.
                     """
 
                     # Daftar model prioritas terbaru dengan mekanisme failover (mengatasi 404 / 503)
