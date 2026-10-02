@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from docx import Document
 
@@ -135,6 +135,14 @@ if "ver_rekap" not in st.session_state:
     st.session_state.ver_rekap = 0
 if "import_preview" not in st.session_state:
     st.session_state.import_preview = None
+for _k, _v in {
+    "uploader_prod_ver": 0,
+    "uploader_impor_ver": 0,
+    "pesan_proses": [],
+    "pesan_impor": [],
+}.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 if "kategori_auto" not in st.session_state:
     st.session_state.kategori_auto = {}
 if "hasil_dokumen" not in st.session_state:
@@ -405,6 +413,56 @@ def ekstrak_data_lama(f):
     return baris
 
 
+BULAN_SINGKAT = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
+def norm_kegiatan(nama):
+    """Samakan penulisan nama kegiatan agar kegiatan yang sama tidak terhitung dobel."""
+    t = str(nama).lower()
+    t = re.sub(r"^\s*(skk|si|sttp|li|infosus|kirkat)\s*[=\-\u2013:_]+\s*", "", t)
+    t = re.sub(r"[^a-z0-9 ]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def combo_chart(labels, batang, garis, judul, nama_batang, nama_garis):
+    """Combo chart: batang + garis. Batang tertinggi diberi warna merah."""
+    batang = [int(x) for x in batang]
+    garis = [int(x) for x in garis]
+    warna = ["#1f77b4"] * len(batang)
+    if batang and max(batang) > 0:
+        warna[batang.index(max(batang))] = "#d62728"
+    puncak = max(batang + garis + [1])
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=labels,
+            y=batang,
+            name=nama_batang,
+            marker_color=warna,
+            text=batang,
+            textposition="outside",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=garis,
+            name=nama_garis,
+            mode="lines+markers",
+            line=dict(color="#ff7f0e", width=3),
+            marker=dict(size=8),
+        )
+    )
+    fig.update_layout(
+        title=judul,
+        height=400,
+        legend=dict(orientation="h", y=-0.25),
+        margin=dict(t=60, b=40, l=40, r=20),
+        yaxis=dict(title="Jumlah", range=[0, puncak * 1.25], tickformat="d"),
+    )
+    return fig
+
+
 def buat_docx(teks):
     doc = Document()
     for paragraf in teks.replace("**", "").split("\n"):
@@ -426,6 +484,7 @@ with tab1:
         "Pilih satu atau beberapa file (PDF, TXT, DOCX, atau Foto/Scan Surat)",
         type=["pdf", "docx", "txt", "png", "jpg"],
         accept_multiple_files=True,
+        key=f"uploader_prod_{st.session_state.uploader_prod_ver}",
     )
 
     perintah = st.selectbox(
@@ -510,8 +569,16 @@ with tab1:
                     )
                     simpan_db()
                 except Exception as e:
-                    st.error(f"Gagal memproses {f.name}: {e}")
+                    st.session_state.pesan_proses.append(f"Gagal memproses {f.name}: {e}")
                 progres.progress((i + 1) / len(uploaded_files))
+
+            # Kosongkan kolom upload agar siap untuk berkas baru
+            st.session_state.uploader_prod_ver += 1
+            st.rerun()
+
+    for _pesan in st.session_state.pesan_proses:
+        st.error(_pesan)
+    st.session_state.pesan_proses = []
 
     if st.session_state.hasil_dokumen:
         st.success(f"{len(st.session_state.hasil_dokumen)} dokumen berhasil diproses!")
@@ -548,7 +615,7 @@ with tab2:
             "Pilih berkas lama",
             type=["pdf", "docx", "txt", "png", "jpg", "csv", "xlsx"],
             accept_multiple_files=True,
-            key="uploader_impor",
+            key=f"uploader_impor_{st.session_state.uploader_impor_ver}",
         )
 
         if st.button("🔍 Analisis Berkas Lama"):
@@ -587,7 +654,16 @@ with tab2:
                     df_prev["Tanggal"] = tgl.dt.strftime("%Y-%m-%d").fillna("")
                 st.session_state.import_preview = df_prev
                 for g in gagal:
-                    st.warning(f"AI gagal, baris diisi otomatis dari nama file/isi teks (periksa manual): {g}")
+                    st.session_state.pesan_impor.append(
+                        f"AI gagal, baris diisi otomatis dari nama file/isi teks (periksa manual): {g}"
+                    )
+                # Kosongkan kolom upload agar siap untuk berkas baru
+                st.session_state.uploader_impor_ver += 1
+                st.rerun()
+
+        for _pesan in st.session_state.pesan_impor:
+            st.warning(_pesan)
+        st.session_state.pesan_impor = []
 
         prev = st.session_state.get("import_preview")
         if prev is not None and not prev.empty:
@@ -600,7 +676,7 @@ with tab2:
                 prev,
                 num_rows="dynamic",
                 use_container_width=True,
-                key="editor_preview",
+                key=f"editor_preview_{st.session_state.uploader_impor_ver}",
                 column_config={
                     "Kategori": st.column_config.SelectboxColumn(
                         "Kategori", options=KATEGORI
@@ -676,65 +752,135 @@ with tab2:
             mask &= (db_tgl.dt.date >= periode[0]) & (db_tgl.dt.date <= periode[1])
         df_filtered = db[mask]
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Kegiatan", len(df_filtered))
-        m2.metric(
-            "Kategori Terbanyak",
-            df_filtered["Kategori"].mode()[0] if not df_filtered.empty else "-",
-        )
-        m3.metric("Produk Terbit", len(df_filtered["Produk Terbit"].replace("", pd.NA).dropna()))
-
-        st.markdown("---")
-
-        c1, c2 = st.columns([6, 4])
-        with c1:
-            st.write("### Daftar Rekapitulasi Kegiatan")
-            df_tampil = df_filtered.copy()
-            df_tampil.insert(0, "Hapus", False)
-            edited = st.data_editor(
-                df_tampil,
-                hide_index=True,
-                use_container_width=True,
-                disabled=KOLOM_DB,
-                column_config={"Hapus": st.column_config.CheckboxColumn("Hapus")},
-                key=f"editor_rekap_{st.session_state.ver_rekap}",
+        if df_filtered.empty:
+            st.info("Tidak ada data pada filter ini.")
+        else:
+            # Kegiatan yang sama (nama + tanggal sama) hanya dihitung sekali,
+            # walaupun punya beberapa jenis produk.
+            df_f = df_filtered.copy()
+            df_f["_tgl"] = pd.to_datetime(df_f["Tanggal"], errors="coerce")
+            df_f["_key"] = (
+                df_f["Nama Kegiatan"].map(norm_kegiatan) + "|" + df_f["Tanggal"].astype(str)
             )
-            terpilih = edited.index[edited["Hapus"]]
+            df_f["Produk Terbit"] = df_f["Produk Terbit"].replace("", "LAINNYA")
+            kegiatan_unik = df_f.drop_duplicates("_key")
+            produk_unik = df_f.drop_duplicates(["_key", "Produk Terbit"])
 
-            d1, d2 = st.columns(2)
-            if d1.button(
-                f"🗑️ Hapus {len(terpilih)} data terpilih",
-                disabled=len(terpilih) == 0,
-            ):
-                st.session_state.db_kegiatan = db.drop(index=terpilih).reset_index(drop=True)
+            # Per bulan (bulan tanpa kegiatan tetap tampil bernilai 0)
+            tgl_valid = df_f["_tgl"].dropna()
+            bulan_k = bulan_p = None
+            if not tgl_valid.empty:
+                rentang = pd.period_range(
+                    tgl_valid.min().to_period("M"), tgl_valid.max().to_period("M"), freq="M"
+                )
+                bulan_k = kegiatan_unik["_tgl"].dt.to_period("M").value_counts().reindex(rentang, fill_value=0)
+                bulan_p = produk_unik["_tgl"].dt.to_period("M").value_counts().reindex(rentang, fill_value=0)
+                label_bulan = [f"{BULAN_SINGKAT[p.month - 1]} {p.year}" for p in rentang]
+
+            cat_k = kegiatan_unik["Kategori"].value_counts()
+            cat_p = produk_unik["Kategori"].value_counts()
+            urut_kat = list(cat_k.index) + [c for c in cat_p.index if c not in cat_k.index]
+            prod_c = produk_unik["Produk Terbit"].value_counts()
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Kegiatan", len(kegiatan_unik))
+            m2.metric("Total Produk Terbit", len(produk_unik))
+            if bulan_k is not None and bulan_k.max() > 0:
+                p_max = bulan_k.idxmax()
+                m3.metric("Bulan Terbanyak", f"{BULAN_SINGKAT[p_max.month - 1]} {p_max.year}", f"{int(bulan_k.max())} kegiatan", delta_color="off")
+            else:
+                m3.metric("Bulan Terbanyak", "-")
+            m4.metric("Bidang Terbanyak", cat_k.index[0] if not cat_k.empty else "-")
+
+            st.caption(
+                "Grafik menghitung kegiatan unik: kegiatan yang sama (nama dan tanggal sama) "
+                "hanya dihitung sekali meski punya beberapa jenis produk. "
+                "Batang merah = nilai tertinggi."
+            )
+            st.markdown("---")
+
+            if bulan_k is not None:
+                st.plotly_chart(
+                    combo_chart(
+                        label_bulan,
+                        bulan_k.values,
+                        bulan_p.values,
+                        "Jumlah Kegiatan & Produk Terbit per Bulan",
+                        "Jumlah Kegiatan",
+                        "Produk Terbit",
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                st.info("Grafik per bulan belum bisa dibuat karena tanggal belum valid.")
+
+            g1, g2 = st.columns(2)
+            with g1:
+                st.plotly_chart(
+                    combo_chart(
+                        [c.replace(" (", "<br>(") for c in urut_kat],
+                        [cat_k.get(c, 0) for c in urut_kat],
+                        [cat_p.get(c, 0) for c in urut_kat],
+                        "Kegiatan per Bidang",
+                        "Jumlah Kegiatan",
+                        "Produk Terbit",
+                    ),
+                    use_container_width=True,
+                )
+            with g2:
+                fig_prod = go.Figure(
+                    go.Bar(
+                        x=list(prod_c.index),
+                        y=[int(v) for v in prod_c.values],
+                        text=[int(v) for v in prod_c.values],
+                        textposition="outside",
+                        marker_color="#2ca02c",
+                    )
+                )
+                fig_prod.update_layout(
+                    title="Jumlah Produk Intelijen yang Dibuat",
+                    height=400,
+                    margin=dict(t=60, b=40, l=40, r=20),
+                    yaxis=dict(title="Jumlah", range=[0, max(int(prod_c.max()), 1) * 1.25], tickformat="d"),
+                )
+                st.plotly_chart(fig_prod, use_container_width=True)
+
+        # ---------------- Tabel & hapus data ----------------
+        st.markdown("---")
+        st.write("### Daftar Rekapitulasi Kegiatan")
+        df_tampil = df_filtered.copy()
+        df_tampil.insert(0, "Hapus", False)
+        edited = st.data_editor(
+            df_tampil,
+            hide_index=True,
+            use_container_width=True,
+            disabled=KOLOM_DB,
+            column_config={"Hapus": st.column_config.CheckboxColumn("Hapus")},
+            key=f"editor_rekap_{st.session_state.ver_rekap}",
+        )
+        terpilih = edited.index[edited["Hapus"]]
+
+        d1, d2 = st.columns(2)
+        if d1.button(
+            f"🗑️ Hapus {len(terpilih)} data terpilih",
+            disabled=len(terpilih) == 0,
+        ):
+            st.session_state.db_kegiatan = db.drop(index=terpilih).reset_index(drop=True)
+            simpan_db()
+            st.session_state.ver_rekap += 1
+            st.rerun()
+
+        with d2:
+            yakin = st.checkbox("Saya yakin menghapus SEMUA data")
+            if st.button("⚠️ Hapus Semua Data", disabled=not yakin):
+                st.session_state.db_kegiatan = pd.DataFrame(columns=KOLOM_DB)
                 simpan_db()
                 st.session_state.ver_rekap += 1
                 st.rerun()
 
-            with d2:
-                yakin = st.checkbox("Saya yakin menghapus SEMUA data")
-                if st.button("⚠️ Hapus Semua Data", disabled=not yakin):
-                    st.session_state.db_kegiatan = pd.DataFrame(columns=KOLOM_DB)
-                    simpan_db()
-                    st.session_state.ver_rekap += 1
-                    st.rerun()
-
-            st.download_button(
-                "💾 Unduh Cadangan Rekap (CSV)",
-                data=db.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"rekap_intelkam_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-            )
-
-        with c2:
-            st.write("### Grafik Sebaran Kategori")
-            if df_filtered.empty:
-                st.info("Tidak ada data pada filter ini.")
-            else:
-                fig = px.pie(
-                    df_filtered,
-                    names="Kategori",
-                    title="Persentase Kegiatan per Bidang",
-                    hole=0.4,
-                )
-                st.plotly_chart(fig, use_container_width=True)
+        st.download_button(
+            "💾 Unduh Cadangan Rekap (CSV)",
+            data=db.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"rekap_intelkam_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+        )
