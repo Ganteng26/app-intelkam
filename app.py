@@ -1,13 +1,12 @@
-from datetime import datetime
 import io
 import time
-
-from docx import Document
-from google import genai
-from google.genai import types
+from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from docx import Document
+from google import genai
+from google.genai import types
 
 # Setup Halaman Streamlit
 st.set_page_config(
@@ -18,12 +17,13 @@ st.set_page_config(
 
 st.title("🛡️ Sistem Informasi & Rekapitulasi Intelkam Polres Ciamis")
 st.caption(
-    "Dashboard Analisis, Pengkategorian Dokumen Intelijen, Konversi Format, & Monitoring Kegiatan Kepolisian"
+    "Aplikasi Pengolahan Produk Intelijen Baku (SKK, SI, STTP, LI, INFOSUS, KIRKAT) & Dasbor Rekapitulasi Kegiatan"
 )
 
 # Sidebar Input API Key & Konfigurasi Sistem
 st.sidebar.header("⚙️ Pengaturan Sistem")
 
+# Logika Membaca API Key Permanen dari secrets.toml atau input manual
 saved_api_key = ""
 if "GEMINI_API_KEY" in st.secrets:
     saved_api_key = st.secrets["GEMINI_API_KEY"]
@@ -40,533 +40,226 @@ else:
 
 # Inisialisasi Database Lokal / Catatan Kegiatan
 if "db_kegiatan" not in st.session_state:
-    initial_data = [
-        {
-            "Nomor": 1,
-            "Nomor Dokumen": "LI/01/I/2026/IK",
-            "Tanggal Dokumen": "2026-01-10",
-            "Jenis Dokumen": "LAPORAN INFORMASI",
-            "Nama/Judul Kegiatan": "Konser Musik Awal Tahun",
-            "Kategori Kegiatan": "Konser/Hiburan",
-            "Lokasi": "Alun-alun Ciamis",
-            "Tanggal Kegiatan": "2026-01-10",
-            "Bulan": "Januari",
-            "Tahun": 2026,
-            "Keterangan": "Aman dan terkendali",
-        },
-        {
-            "Nomor": 2,
-            "Nomor Dokumen": "SI/05/II/2026/IK",
-            "Tanggal Dokumen": "2026-02-15",
-            "Jenis Dokumen": "SURAT IZIN",
-            "Nama/Judul Kegiatan": "Turnamen Sepak Bola Bupati Cup",
-            "Kategori Kegiatan": "Kompetisi/Pertandingan",
-            "Lokasi": "Stadion Galuh Ciamis",
-            "Tanggal Kegiatan": "2026-02-15",
-            "Bulan": "Februari",
-            "Tahun": 2026,
-            "Keterangan": "Berjalan lancar",
-        },
-    ]
-    st.session_state.db_kegiatan = pd.DataFrame(initial_data)
-
-# Tab Navigasi Utama
-tab1, tab2, tab3, tab4 = st.tabs(
-    [
-        "📄 Upload & Generator Dokumen",
-        "🔄 Konversi Data ke Format Intel",
-        "📊 Dasbor & Analisis Statistik",
-        "🗂️ Database & Manajemen Data",
-    ]
-)
-
-# ==========================================
-# TAB 1: UPLOAD & GENERATOR DOKUMEN
-# ==========================================
-with tab1:
-    st.subheader(
-        "1. Unggah Bahan / Berkas Kegiatan (Bisa Mengunggah Banyak File Sekaligus)"
+    st.session_state.db_kegiatan = pd.DataFrame(
+        columns=[
+            "Tanggal",
+            "Nama Kegiatan",
+            "Kategori",
+            "Penanggung Jawab",
+            "Jumlah Massa",
+            "Produk Terbit",
+        ]
     )
 
-    # Pilihan Bulan Arsip (Dari Bulan 1 sampai Bulan Oktober / Berjalan)
-    daftar_bulan = [
-        "Januari",
-        "Februari",
-        "Maret",
-        "April",
-        "Mei",
-        "Juni",
-        "Juli",
-        "Agustus",
-        "September",
-        "Oktober",
-        "November",
-        "Desember",
-    ]
-    pilih_bulan_arsip = st.selectbox(
-        "Pilih Bulan Arsip Kegiatan:",
-        daftar_bulan,
-        index=9,
-        key="pilih_bulan_arsip",
-    )  # Default Oktober (Bulan 10)
+# Tab Navigasi
+tab1, tab2 = st.tabs(
+    ["📄 Upload & Penanganan Dokumen", "📊 Dasbor Rekapitulasi & Statistik"]
+)
 
-    uploaded_files = st.file_uploader(
-        "Pilih file (PDF, TXT, DOCX, atau Foto/Scan Surat) - Dapat memilih lebih dari satu file",
+# TAB 1: UPLOAD & GENERATOR DOKUMEN
+with tab1:
+    st.subheader("1. Unggah Bahan / Berkas Kegiatan")
+    uploaded_file = st.file_uploader(
+        "Pilih file (PDF, TXT, DOCX, atau Foto/Scan Surat)",
         type=["pdf", "docx", "txt", "png", "jpg"],
-        accept_multiple_files=True,
     )
 
     col1, col2 = st.columns(2)
     with col1:
         perintah = st.selectbox(
-            "Pilih Format Output Dokumen:",
+            "Pilih Format Output yang Ingin Dibuat (Kata Kunci):",
             [
-                "SURAT KETERANGAN KEPOLISIAN",
-                "SURAT IZIN",
-                "SURAT TANDA TERIMA PEMBERITAHUAN",
-                "LAPORAN INFORMASI",
-                "INFORMASI KHUSUS",
-                "PERKIRAAN KEADAAN SINGKAT",
+                "skk (Surat Keterangan Kepolisian / POA)",
+                "si (Surat Izin Kepolisian)",
+                "sttp (Surat Tanda Terima Pemberitahuan)",
+                "li (Laporan Informasi)",
+                "infosus (Informasi Khusus)",
+                "kirkat (Perkiraan Keadaan Singkat)",
             ],
-            key="tab1_perintah",
         )
     with col2:
         kategori_kegiatan = st.selectbox(
             "Kategori / Bidang Kegiatan:",
             [
-                "Konser/Hiburan",
-                "Kompetisi/Pertandingan",
-                "Kegiatan Masyarakat",
-                "Kegiatan Pemerintahan",
-                "Lainnya",
+                "YANMAS / POA (Pengawasan Orang Asing / SKK)",
+                "OLAHRAGA",
+                "KEAGAMAAN",
+                "SOSBUD / KERAMAIAN",
+                "POLITIK / SOSPOL",
+                "EKONOMI",
             ],
-            key="tab1_kategori",
         )
 
-    tgl_kegiatan_input = st.date_input(
-        "Tanggal Pelaksanaan Kegiatan:", value=datetime.today(), key="tab1_tgl"
-    )
-    lokasi_input = st.text_input(
-        "Lokasi Kegiatan:", value="Wilayah Hukum Polres Ciamis", key="tab1_lokasi"
-    )
-
-    if st.button("🚀 Proses & Buat Dokumen", key="btn_tab1"):
+    if st.button("🚀 Proses & Buat Dokumen"):
         if not api_key:
-            st.error("Silakan masukkan Gemini API Key terlebih dahulu di sidebar!")
-        elif not uploaded_files:
-            st.warning("Silakan unggah minimal satu berkas bahan kegiatan!")
+            st.error(
+                "Silakan masukkan Gemini API Key terlebih dahulu di sidebar atau atur di Secrets!"
+            )
+        elif not uploaded_file:
+            st.warning("Silakan unggah berkas bahan terlebih dahulu!")
         else:
             with st.spinner(
                 "AI sedang menganalisis berkas dan menyusun draf baku sesuai format Sat Intelkam..."
             ):
                 try:
                     client = genai.Client(api_key=api_key)
-                    keyword_cmd = perintah.lower()
 
-                    for uploaded_file in uploaded_files:
-                        bytes_data = uploaded_file.getvalue()
-                        mime_type = uploaded_file.type
+                    bytes_data = uploaded_file.getvalue()
+                    mime_type = uploaded_file.type
 
-                        if mime_type == "text/plain":
-                            file_part = bytes_data.decode("utf-8")
-                        else:
-                            file_part = types.Part.from_bytes(
-                                data=bytes_data, mime_type=mime_type
-                            )
-
-                        prompt = f"""
-                        Anda adalah Asisten Intelkam Polres Ciamis. Pelajari data yang diunggah dan buatkan draft teks produk intelijen dengan format: {perintah}.
-                        Aturan Ketat & Format Baku Sat Intelkam Polres Ciamis:
-                        - Pejabat Penandatangan Resmi: KASAT INTELKAM POLRES CIAMIS, AKP RAHMAT KOMARA, S.H., M.H., AJUN KOMISARIS POLISI NRP 70030155.
-                        - Gunakan bahasa baku dinas Kepolisian Republik Indonesia, lengkap, terstruktur, tidak disingkat sembarangan.
-                        """
-
-                        models_to_try = [
-                            "gemini-2.0-flash",
-                            "gemini-1.5-flash",
-                        ]
-                        response = None
-                        last_error = None
-
-                        for model_name in models_to_try:
-                            try:
-                                for attempt in range(3):
-                                    try:
-                                        response = client.models.generate_content(
-                                            model=model_name,
-                                            contents=[file_part, prompt],
-                                        )
-                                        if response:
-                                            break
-                                    except Exception as err:
-                                        if (
-                                            "503" in str(err)
-                                            or "UNAVAILABLE" in str(err)
-                                            or "404" in str(err)
-                                        ):
-                                            time.sleep(2)
-                                        else:
-                                            raise err
-                                if response:
-                                    break
-                            except Exception as m_err:
-                                last_error = m_err
-                                continue
-
-                        if not response:
-                            raise Exception(
-                                f"Gagal memproses file {uploaded_file.name}: {last_error}"
-                            )
-
-                        hasil_teks = response.text
-                        st.success(f"Berhasil memproses: {uploaded_file.name}")
-                        st.text_area(
-                            f"Pratinjau: {uploaded_file.name}",
-                            hasil_teks,
-                            height=250,
+                    # Penanganan tipe berkas
+                    if mime_type == "text/plain":
+                        file_part = bytes_data.decode("utf-8")
+                    else:
+                        file_part = types.Part.from_bytes(
+                            data=bytes_data,
+                            mime_type=mime_type,
                         )
 
-                        # Export ke Word
-                        doc = Document()
-                        for p_para in hasil_teks.split("\n"):
-                            doc.add_paragraph(p_para)
-                        bio = io.BytesIO()
-                        doc.save(bio)
+                    # Ekstraksi kata kunci perintah
+                    keyword_cmd = perintah.split()[0].lower()
 
-                        st.download_button(
-                            label=f"📥 Download Word ({uploaded_file.name})",
-                            data=bio.getvalue(),
-                            file_name=f"Produk_{perintah.replace(' ', '_')}_{uploaded_file.name.split('.')[0]}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        )
-
-                        # Catat ke Database
-                        new_row = {
-                            "Nomor": len(st.session_state.db_kegiatan) + 1,
-                            "Nomor Dokumen": f"DOC/{len(st.session_state.db_kegiatan)+1}/X/2026/IK",
-                            "Tanggal Dokumen": datetime.today().strftime(
-                                "%Y-%m-%d"
-                            ),
-                            "Jenis Dokumen": perintah,
-                            "Nama/Judul Kegiatan": uploaded_file.name.split(
-                                "."
-                            )[0],
-                            "Kategori Kegiatan": kategori_kegiatan,
-                            "Lokasi": lokasi_input,
-                            "Tanggal Kegiatan": tgl_kegiatan_input.strftime(
-                                "%Y-%m-%d"
-                            ),
-                            "Bulan": pilih_bulan_arsip,
-                            "Tahun": tgl_kegiatan_input.year,
-                            "Keterangan": "Selesai diproses sistem",
-                        }
-                        st.session_state.db_kegiatan = pd.concat(
-                            [
-                                st.session_state.db_kegiatan,
-                                pd.DataFrame([new_row]),
-                            ],
-                            ignore_index=True,
-                        )
-
-                except Exception as e:
-                    st.error(f"Terjadi kesalahan: {e}")
-
-# ==========================================
-# TAB 2: KONVERSI DATA MENTAH MENJADI FORMAT INTELIJEN
-# ==========================================
-with tab2:
-    st.subheader(
-        "🔄 Modul Konversi Teks/Catatan Mentah Menjadi Format Produk Intelijen"
-    )
-    st.markdown(
-        "Gunakan fitur ini untuk mengubah catatan kasar, transkrip, laporan lapangan mentah, atau narasi bebas menjadi format resmi intelijen secara otomatis menggunakan AI."
-    )
-
-    raw_text_input = st.text_area(
-        "Masukkan Catatan/Laporan Mentah di Lapangan:",
-        placeholder="Contoh: Tadi malam pukul 20.00 WIB terpantau ada kelompok pemuda kumpul-kumpul di sekitar alun-alun membawa atribut perguruan silat...",
-        height=150,
-    )
-
-    target_format = st.selectbox(
-        "Pilih Target Format Intelijen:",
-        [
-            "LAPORAN INFORMASI",
-            "INFORMASI KHUSUS",
-            "PERKIRAAN KEADAAN SINGKAT",
-            "SURAT IZIN",
-            "SURAT KETERANGAN KEPOLISIAN",
-            "SURAT TANDA TERIMA PEMBERITAHUAN",
-        ],
-    )
-
-    if st.button("✨ Konversi Menjadi Format Intelijen"):
-        if not api_key:
-            st.error("Silakan masukkan Gemini API Key terlebih dahulu di sidebar!")
-        elif not raw_text_input.strip():
-            st.warning("Teks laporan mentah tidak boleh kosong!")
-        else:
-            with st.spinner(
-                "Sedang menstrukturkan data ke dalam format standar Sat Intelkam..."
-            ):
-                try:
-                    client = genai.Client(api_key=api_key)
-                    conv_prompt = f"""
-                    Anda adalah Perwira Analis Intelkam Polres Ciamis. 
-                    Ubah catatan/laporan mentah berikut ini menjadi format resmi '{target_format}' sesuai standar Kepolisian Republik Indonesia yang rapi, profesional, dan objektif.
-                    
-                    Catatan Mentah:
-                    {raw_text_input}
+                    prompt = f"""
+                    Anda adalah Asisten Intelkam Polres Ciamis. Pelajari data yang diunggah dan buatkan draft teks produk intelijen sesuai kode perintah: {keyword_cmd}.
+                    Aturan Ketat & Format Baku Sat Intelkam Polres Ciamis:
+                    - Pejabat Penandatangan Resmi: KASAT INTELKAM POLRES CIAMIS, AKP RAHMAT KOMARA, S.H., M.H., AJUN KOMISARIS POLISI NRP 70030155.
+                    - Gunakan bahasa baku dinas Kepolisian Republik Indonesia, lengkap, terstruktur, tidak disingkat sembarangan.
+                    - Jika perintah 'skk': Buat Surat Keterangan Kepolisian (SKK) untuk Orang Asing/POA, sertakan detail identitas, Sponsor, Paspor, ITAS/ITAP, Penjamin, dan Masa Berlaku.
+                    - Jika perintah 'si': Buat Surat Izin dengan struktur tabel 2 kolom (Pertimbangan, Dasar, Memperhatikan, Memberikan Izin) dan 4 poin catatan/kewajiban.
+                    - Jika perintah 'sttp': Buat Surat Tanda Terima Pemberitahuan sesuai format baku.
+                    - Jika perintah 'li': Buat Laporan Informasi dengan header baku (Sumber, Hubungan, Cara, Waktu, Nilai A-1), Fakta-Fakta 5W+1H, Analisa, Prediksi, Langkah-langkah, dan Rekomendasi secara kaya.
+                    - Jika perintah 'infosus': Buat Nota Dinas Pengantar kepada Kapolres Ciamis dan Lembar Informasi Khusus berklasifikasi RAHASIA lengkap dengan distribusi baku.
+                    - Jika perintah 'kirkat': Buat Perkiraan Keadaan Intelijen Singkat (Nota Dinas, Pendahuluan terperinci, Keadaan Sasaran, Analisa, Kesimpulan, dan Saran).
                     """
 
-                    response = client.models.generate_content(
-                        model="gemini-2.0-flash", contents=conv_prompt
-                    )
-                    hasil_konversi = response.text
+                    # Daftar model prioritas terbaru dengan mekanisme failover (mengatasi 404 / 503)
+                    models_to_try = [
+                        "gemini-2.0-flash",
+                        "gemini-1.5-flash",
+                        "gemini-3.8-flash",
+                    ]
+                    response = None
+                    last_error = None
 
-                    st.success("Konversi Berhasil!")
-                    st.text_area(
-                        "Hasil Format Intelijen:", hasil_konversi, height=300
-                    )
+                    for model_name in models_to_try:
+                        try:
+                            for attempt in range(3):
+                                try:
+                                    response = client.models.generate_content(
+                                        model=model_name,
+                                        contents=[file_part, prompt],
+                                    )
+                                    if response:
+                                        break
+                                except Exception as err:
+                                    if (
+                                        "503" in str(err)
+                                        or "UNAVAILABLE" in str(err)
+                                        or "404" in str(err)
+                                    ):
+                                        time.sleep(2)
+                                    else:
+                                        raise err
+                            if response:
+                                break
+                        except Exception as m_err:
+                            last_error = m_err
+                            continue
 
-                    doc_conv = Document()
-                    for line in hasil_konversi.split("\n"):
-                        doc_conv.add_paragraph(line)
-                    bio_conv = io.BytesIO()
-                    doc_conv.save(bio_conv)
+                    if not response:
+                        raise Exception(
+                            f"Server Google Gemini sedang sibuk atau model tidak tersedia. Detail: {last_error}"
+                        )
+
+                    st.success("Dokumen Berhasil Diproses!")
+                    hasil_teks = response.text
+
+                    st.subheader("📝 Pratinjau Teks Output:")
+                    st.text_area("Hasil Teks Baku:", hasil_teks, height=350)
+
+                    # Export ke .docx (Word)
+                    doc = Document()
+                    for paragraph in hasil_teks.split("\n"):
+                        doc.add_paragraph(paragraph)
+
+                    bio = io.BytesIO()
+                    doc.save(bio)
 
                     st.download_button(
-                        label="📥 Download Hasil Konversi (.docx)",
-                        data=bio_conv.getvalue(),
-                        file_name=f"Konversi_{target_format.replace(' ', '_')}_{datetime.today().strftime('%Y%m%d_%H%M%S')}.docx",
+                        label="📥 Download Sebagai File Word (.docx)",
+                        data=bio.getvalue(),
+                        file_name=f"Produk_Intelkam_{keyword_cmd.upper()}_{datetime.now().strftime('%Y%m%d')}.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     )
+
+                    # Simpan data ke rekapitulasi lokal
+                    new_entry = {
+                        "Tanggal": datetime.now().strftime("%Y-%m-%d"),
+                        "Nama Kegiatan": uploaded_file.name.split(".")[0],
+                        "Kategori": kategori_kegiatan,
+                        "Penanggung Jawab": "Tercatat di Dokumen",
+                        "Jumlah Massa": "1 / Sesuai Data",
+                        "Produk Terbit": keyword_cmd.upper(),
+                    }
+                    st.session_state.db_kegiatan = pd.concat(
+                        [
+                            st.session_state.db_kegiatan,
+                            pd.DataFrame([new_entry]),
+                        ],
+                        ignore_index=True,
+                    )
+
                 except Exception as e:
-                    st.error(f"Gagal melakukan konversi: {e}")
+                    st.error(f"Terjadi kesalahan saat memproses: {e}")
 
-# ==========================================
-# TAB 3: DASBOR & ANALISIS STATISTIK
-# ==========================================
-with tab3:
-    st.subheader("📊 Dashboard Analisis Data Intelijen")
+# TAB 2: DASBOR REKAPITULASI
+with tab2:
+    st.subheader("📊 Dasbor Rekapitulasi Kegiatan Intelkam")
 
     if st.session_state.db_kegiatan.empty:
-        st.info("Belum ada data kegiatan terdaftar.")
+        st.info(
+            "Belum ada data kegiatan terdaftar. Silakan unggah dokumen di Tab 1."
+        )
     else:
-        df = st.session_state.db_kegiatan
-
-        st.markdown("#### 🔍 Filter Data")
-        col_f1, col_f2, col_f3 = st.columns(3)
+        col_f1, col_f2 = st.columns(2)
         with col_f1:
-            selected_tahun = st.multiselect(
-                "Tahun:",
-                options=df["Tahun"].unique(),
-                default=df["Tahun"].unique(),
-                key="f_tahun",
-            )
-        with col_f2:
-            selected_bulan = st.multiselect(
-                "Bulan:",
-                options=df["Bulan"].unique(),
-                default=df["Bulan"].unique(),
-                key="f_bulan",
-            )
-        with col_f3:
-            selected_kat = st.multiselect(
-                "Kategori Kegiatan:",
-                options=df["Kategori Kegiatan"].unique(),
-                default=df["Kategori Kegiatan"].unique(),
-                key="f_kat",
+            kat_filter = st.multiselect(
+                "Filter Kategori:",
+                options=st.session_state.db_kegiatan["Kategori"].unique(),
+                default=st.session_state.db_kegiatan["Kategori"].unique(),
             )
 
-        df_filtered = df[
-            df["Tahun"].isin(selected_tahun)
-            & df["Bulan"].isin(selected_bulan)
-            & df["Kategori Kegiatan"].isin(selected_kat)
+        df_filtered = st.session_state.db_kegiatan[
+            st.session_state.db_kegiatan["Kategori"].isin(kat_filter)
         ]
 
-        total_dok = len(df_filtered)
-        tot_si = len(
-            df_filtered[
-                df_filtered["Jenis Dokumen"].str.contains("SURAT IZIN", case=False)
-            ]
-        )
-        tot_li = len(
-            df_filtered[
-                df_filtered["Jenis Dokumen"].str.contains(
-                    "LAPORAN INFORMASI", case=False
-                )
-            ]
-        )
-        tot_infosus = len(
-            df_filtered[
-                df_filtered["Jenis Dokumen"].str.contains(
-                    "INFORMASI KHUSUS", case=False
-                )
-            ]
-        )
-        tot_kirkat = len(
-            df_filtered[
-                df_filtered["Jenis Dokumen"].str.contains(
-                    "PERKIRAAN KEADAAN", case=False
-                )
-            ]
-        )
-        tot_skp = len(
-            df_filtered[
-                df_filtered["Jenis Dokumen"].str.contains(
-                    "SURAT KETERANGAN KEPOLISIAN", case=False
-                )
-            ]
-        )
-
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("Total Dokumen", total_dok)
-        c2.metric("Surat Izin", tot_si)
-        c3.metric("Laporan Info", tot_li)
-        c4.metric("Infosus", tot_infosus)
-        c5.metric("Kirkat", tot_kirkat)
-        c6.metric("SKP", tot_skp)
-
-        st.markdown("---")
-        st.markdown("### 📝 Analisis Otomatis")
-        if not df_filtered.empty:
-            top_dok = (
-                df_filtered["Jenis Dokumen"].mode()[0]
-                if not df_filtered["Jenis Dokumen"].empty
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Kegiatan", len(df_filtered))
+        m2.metric(
+            "Kategori Terbanyak",
+            (
+                df_filtered["Kategori"].mode()[0]
+                if not df_filtered.empty
                 else "-"
-            )
-            top_kat = (
-                df_filtered["Kategori Kegiatan"].mode()[0]
-                if not df_filtered["Kategori Kegiatan"].empty
-                else "-"
-            )
-            st.info(
-                f"Berdasarkan filter aktif, tercatat total **{total_dok} dokumen intelijen**. "
-                f"Jenis dokumen yang paling sering diterbitkan adalah **{top_dok}**, "
-                f"sedangkan kategori kegiatan terbanyak ditangani adalah **{top_kat}**."
-            )
-        else:
-            st.warning("Tidak ada data yang sesuai dengan filter yang dipilih.")
+            ),
+        )
+        m3.metric(
+            "Produk Terbit", len(df_filtered["Produk Terbit"].dropna())
+        )
 
         st.markdown("---")
 
-        col_g1, col_g2 = st.columns(2)
-        with col_g1:
-            st.markdown("#### Distribusi Jenis Dokumen")
-            if not df_filtered.empty:
-                dok_counts = (
-                    df_filtered["Jenis Dokumen"].value_counts().reset_index()
-                )
-                dok_counts.columns = ["Jenis Dokumen", "Jumlah"]
-                fig_dok = px.bar(
-                    dok_counts,
-                    x="Jenis Dokumen",
-                    y="Jumlah",
-                    text="Jumlah",
-                    color="Jenis Dokumen",
-                )
-                st.plotly_chart(fig_dok, use_container_width=True)
-            else:
-                st.write("Data kosong.")
+        c1, c2 = st.columns([6, 4])
+        with c1:
+            st.write("### Daftar Rekapitulasi Kegiatan")
+            st.dataframe(df_filtered, use_container_width=True)
 
-        with col_g2:
-            st.markdown("#### Sebaran Kategori Kegiatan")
-            if not df_filtered.empty:
-                kat_counts = (
-                    df_filtered["Kategori Kegiatan"].value_counts().reset_index()
-                )
-                kat_counts.columns = ["Kategori Kegiatan", "Jumlah"]
-                fig_kat = px.bar(
-                    kat_counts,
-                    x="Kategori Kegiatan",
-                    y="Jumlah",
-                    text="Jumlah",
-                    color="Kategori Kegiatan",
-                )
-                st.plotly_chart(fig_kat, use_container_width=True)
-            else:
-                st.write("Data kosong.")
-
-        st.markdown("### 📈 Tren Jumlah Kegiatan Per Bulan (Januari - Desember)")
-        bulan_order = [
-            "Januari",
-            "Februari",
-            "Maret",
-            "April",
-            "Mei",
-            "Juni",
-            "Juli",
-            "Agustus",
-            "September",
-            "Oktober",
-            "November",
-            "Desember",
-        ]
-        if not df_filtered.empty:
-            monthly_trend = (
-                df_filtered.groupby("Bulan")
-                .size()
-                .reindex(bulan_order, fill_value=0)
-                .reset_index()
+        with c2:
+            st.write("### Grafik Sebaran Kategori")
+            fig = px.pie(
+                df_filtered,
+                names="Kategori",
+                title="Persentase Kegiatan per Bidang",
+                hole=0.4,
             )
-            monthly_trend.columns = ["Bulan", "Jumlah Kegiatan"]
-            fig_trend = px.line(
-                monthly_trend,
-                x="Bulan",
-                y="Jumlah Kegiatan",
-                markers=True,
-                text="Jumlah Kegiatan",
-            )
-            st.plotly_chart(fig_trend, use_container_width=True)
-
-        st.markdown(
-            "### 🔀 Analisis Silang: Jenis Dokumen × Kategori Kegiatan"
-        )
-        if not df_filtered.empty:
-            cross_tab = pd.crosstab(
-                df_filtered["Kategori Kegiatan"],
-                df_filtered["Jenis Dokumen"],
-                margins=True,
-                margins_name="Total",
-            )
-            st.dataframe(cross_tab, use_container_width=True)
-
-# ==========================================
-# TAB 4: DATABASE & MANAJEMEN DATA
-# ==========================================
-with tab4:
-    st.subheader("🗂️ Database Dokumen & Manajemen Hapus Data")
-
-    if st.session_state.db_kegiatan.empty:
-        st.info("Database kosong.")
-    else:
-        st.write("Draf dan riwayat dokumen yang telah diproses:")
-        st.dataframe(st.session_state.db_kegiatan, use_container_width=True)
-
-        st.markdown("---")
-        st.markdown("#### 🗑️ Hapus Dokumen / Data")
-        row_to_delete = st.selectbox(
-            "Pilih Baris / Dokumen yang Ingin Dihapus (Berdasarkan Judul & Tanggal):",
-            options=st.session_state.db_kegiatan.index,
-            format_func=lambda x: f"[{x}] {st.session_state.db_kegiatan.loc[x, 'Nama/Judul Kegiatan']} ({st.session_state.db_kegiatan.loc[x, 'Tanggal Kegiatan']})",
-        )
-
-        if st.button("🗑️ Hapus Baris Terpilih"):
-            st.session_state.db_kegiatan = (
-                st.session_state.db_kegiatan.drop(row_to_delete)
-                .reset_index(drop=True)
-            )
-            st.success("Data berhasil dihapus dari sistem!")
-            st.rerun()
-
-        st.markdown("---")
-        csv_data = st.session_state.db_kegiatan.to_csv(index=False).encode(
-            "utf-8"
-        )
-        st.download_button(
-            label="📥 Export Data ke CSV",
-            data=csv_data,
-            file_name=f"Rekap_Intelkam_Ciamis_{datetime.today().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-        )
+            st.plotly_chart(fig, use_container_width=True)
